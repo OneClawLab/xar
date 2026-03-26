@@ -1,0 +1,40 @@
+{
+  "name": "xar",
+  "version": "2.0.0",
+  "description": "xar - Agent Runtime Daemon for TheClaw v2",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "xar": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "release:local": "npm run build && npm link"
+  },
+  "keywords": [
+    "agent",
+    "daemon",
+    "runtime",
+    "theclaw"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^11.1.0",
+    "pai": "file:../pai",
+    "thread": "file:../thread",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "@types/ws": "^8.5.10",
+    "@vitest/coverage-v8": "^1.1.0",
+    "fast-check": "^3.15.1",
+    "tsup": "^8.0.2",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.0"
+  }
+}

@@ -1,0 +1,42 @@
+/**
+ * Logging utilities for xar daemon and agents
+ */
+
+import { join } from 'path'
+import { createFileLogger, createFireAndForgetLogger, type Logger } from './repo-utils/logger.js'
+import { getTheClawHome } from './config.js'
+
+export type { Logger }
+
+function defaultLogDir(): string {
+  return join(getTheClawHome(), 'logs')
+}
+
+/**
+ * Create a logger for the daemon
+ */
+export async function createDaemonLogger(logDir?: string): Promise<Logger> {
+  return createFileLogger(logDir ?? defaultLogDir(), 'xar', 10000)
+}
+
+/**
+ * Create a fire-and-forget logger for an agent
+ * (suitable for background daemon operations)
+ */
+export function createAgentLogger(agentId: string, logDir?: string): Logger {
+  return createFireAndForgetLogger(logDir ?? defaultLogDir(), `agent-${agentId}`, 10000)
+}
+
+/**
+ * Get the daemon log file path
+ */
+export function getDaemonLogPath(logDir?: string): string {
+  return join(logDir ?? defaultLogDir(), 'xar.log')
+}
+
+/**
+ * Get the agent log file path
+ */
+export function getAgentLogPath(agentId: string, logDir?: string): string {
+  return join(logDir ?? defaultLogDir(), `agent-${agentId}.log`)
+}
