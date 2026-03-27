@@ -1,4 +1,4 @@
-# xar SPECv2 - Agent Runtime Daemon
+# xar - Agent Runtime Daemon
 
 xar 是 TheClaw v2 架构的核心 runtime daemon，负责 agent 生命周期管理、消息调度、LLM 调用和出站投递。
 
@@ -61,7 +61,7 @@ xar/
 ├── tsconfig.json
 ├── tsup.config.ts                # 单 entry: src/index.ts，带 shebang
 ├── vitest.config.ts
-├── SPECv2.md
+├── SPEC.md                       ← This document
 └── USAGE.md
 ```
 
@@ -149,14 +149,6 @@ xar daemon start              # 启动 xar daemon（后台，fork 子进程）
 xar daemon stop               # 停止 xar daemon（发送 SIGTERM）
 xar daemon status             # 查看 daemon 运行状态（PID、uptime、已注册 agent 数）
 ```
-
-**`xar daemon start` 行为**：
-1. 检查 PID 文件，若 daemon 已运行则报错退出（退出码 1）。
-2. Fork 子进程运行 daemon（`daemon/index.ts`），父进程退出。
-3. 子进程写入 PID 文件（`~/.theclaw/xar.pid`）。
-4. 子进程启动 IPC Server（`~/.theclaw/xar.sock`）。
-5. 子进程加载所有已注册且状态为 `started` 的 agent，为每个 agent 启动 run-loop。
-6. 子进程启动内置 cron scheduler。
 
 **`xar daemon start` 行为**：
 1. 检查 PID 文件，若 daemon 已运行则报错退出（退出码 1）。
