@@ -20,7 +20,7 @@ export class IpcChunkWriter extends Writable {
 
   _write(chunk: Buffer | string, encoding: BufferEncoding | undefined, callback: (error?: Error | null) => void): void {
     try {
-      const token = typeof chunk === 'string' ? chunk : chunk.toString(encoding || 'utf8')
+      const token = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
 
       this.conn.send({
         type: 'stream_token',
