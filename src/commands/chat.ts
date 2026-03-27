@@ -27,7 +27,7 @@ import { loadAgentConfig } from '../agent/config.js'
 import { loadIdentity } from '../agent/context.js'
 import { openOrCreateThread } from '../agent/thread-lib.js'
 import { compactSession } from '../agent/memory.js'
-import { estimateTokens, estimateMessageTokens, loadSessionMessages } from '../agent/session.js'
+import { estimateTokens, loadSessionMessages, loadCompactState } from '../agent/session.js'
 import { CliError } from '../types.js'
 
 const CLI_THREAD_ID = 'peer-cli'
@@ -39,7 +39,7 @@ const MAX_OUTPUT_TOKENS = 4096
 
 const INDENT = '    '
 const LINE_MAX = 120
-const MULTILINE_MAX_LINES = 3
+const MULTILINE_MAX_LINES = 5
 
 function truncate(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s
@@ -105,19 +105,21 @@ function renderToolResult(data: unknown): void {
 
 // ─── Context usage display ────────────────────────────────────────────────────
 
-async function printCtxUsage(sessionFile: string, systemPrompt: string, userMessage: string): Promise<void> {
-  try {
-    const msgs = await loadSessionMessages(sessionFile)
-    const inputBudget = CONTEXT_WINDOW - MAX_OUTPUT_TOKENS - 512
-    const total = estimateTokens(systemPrompt)
-      + msgs.reduce((s, m) => s + estimateMessageTokens(m), 0)
-      + estimateTokens(userMessage) + 4
-    const pct = Math.round((total / inputBudget) * 100)
-    const toK = (n: number): string => `${Math.round(n / 1000)}K`
-    process.stderr.write(`\nctx: ${pct}% (${toK(total)}/${toK(inputBudget)})\n`)
-  } catch {
-    // session may not exist yet
+function printCtxUsage(
+  systemPrompt: string,
+  history: Array<{ role: string; content: string }>,
+  userMessage: string,
+): void {
+  const inputBudget = CONTEXT_WINDOW - MAX_OUTPUT_TOKENS - 512
+  let total = estimateTokens(systemPrompt)
+  for (const m of history) {
+    const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+    total += estimateTokens(text) + 4
   }
+  total += estimateTokens(userMessage) + 4
+  const pct = Math.round((total / inputBudget) * 100)
+  const toK = (n: number): string => `${Math.round(n / 1000)}K`
+  process.stderr.write(`\nctx: ${pct}% (${toK(total)}/${toK(inputBudget)})\n`)
 }
 
 // ─── Command ──────────────────────────────────────────────────────────────────
@@ -219,15 +221,25 @@ export function createChatCommand(): Command {
             const events = await threadStore.peek({ lastEventId: 0, limit: 1000 })
             // Exclude the message we just pushed (last event) — pai will add it as userMessage
             const historyEvents = events.slice(0, -1)
-            type HistoryMessage = { role: 'user' | 'assistant' | 'tool'; content: string; name?: string }
+            type HistoryMessage = { role: 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string; tool_calls?: unknown[] }
             const history: HistoryMessage[] = []
             for (const ev of historyEvents) {
-              if (ev.type === 'message') {
+              if (ev.type === 'message' && ev.source !== 'self') {
+                // User message — stored as plain content
                 history.push({ role: 'user', content: ev.content })
-              } else if (ev.type === 'record' && ev.source === 'self') {
-                history.push({ role: 'assistant', content: ev.content })
-              } else if (ev.type === 'record' && ev.source.startsWith('tool:')) {
-                history.push({ role: 'tool', content: ev.content, name: ev.source.slice(5) })
+              } else if (ev.type === 'record') {
+                // Assistant/tool records — stored as JSON-encoded full message
+                try {
+                  const msg = JSON.parse(ev.content) as HistoryMessage
+                  if (msg.role === 'assistant' || msg.role === 'tool') {
+                    history.push(msg)
+                  }
+                } catch {
+                  // Legacy plain-text record — best-effort
+                  if (ev.source === 'self') {
+                    history.push({ role: 'assistant', content: ev.content })
+                  }
+                }
               }
             }
 
@@ -280,20 +292,20 @@ export function createChatCommand(): Command {
               }
             }
 
-            // Write assistant/tool records to thread
+            // Write assistant/tool records to thread (store full message JSON to preserve tool_call_id etc.)
             for (const m of newMessages) {
-              const source = m.role === 'assistant' ? 'self' : `tool:${m.name ?? ''}`
+              const source = m.role === 'assistant' ? 'self' : `tool:${(m as any).name ?? ''}`
               const subtype = m.role === 'tool' ? 'toolcall' : undefined
               await threadStore.push({
                 source,
                 type: 'record',
                 ...(subtype ? { subtype } : {}),
-                content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+                content: JSON.stringify(m),
               })
             }
 
             process.stderr.write('\n')
-            await printCtxUsage(sessionFile, systemPrompt, text)
+            printCtxUsage(systemPrompt, history, text)
 
             if (replyHeaderPrinted) {
               process.stdout.write('\n\n')
