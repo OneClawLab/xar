@@ -15,6 +15,8 @@ export function createInitCommand(): Command {
     .description('Initialize a new agent')
     .argument('<id>', 'Agent ID')
     .option('--kind <kind>', 'Agent kind (system|user)', 'user')
+    .option('--provider <name>', 'LLM provider name (default: from pai config)')
+    .option('--model <name>', 'LLM model name (default: from pai config)')
     .action(async (id: string, options) => {
       try {
         const config = getDaemonConfig()
@@ -27,6 +29,37 @@ export function createInitCommand(): Command {
         } catch (err) {
           if (err instanceof CliError) throw err
           // Directory doesn't exist — good
+        }
+
+        // Resolve provider/model: CLI flags > pai defaults > error
+        let paiProvider: string | undefined = options.provider
+        let paiModel: string | undefined = options.model
+
+        if (!paiProvider || !paiModel) {
+          try {
+            const { loadConfig, resolveProvider } = await import('pai')
+            const paiConfig = await loadConfig()
+            if (paiConfig.defaultProvider) {
+              const { provider } = await resolveProvider(paiConfig)
+              if (!paiProvider) paiProvider = provider.name
+              if (!paiModel && provider.defaultModel) paiModel = provider.defaultModel
+            }
+          } catch {
+            // pai config not available
+          }
+        }
+
+        if (!paiProvider) {
+          throw new CliError(
+            'No LLM provider specified. Use --provider <name> or configure a default: pai model default --name <provider>',
+            1,
+          )
+        }
+        if (!paiModel) {
+          throw new CliError(
+            'No LLM model specified. Use --model <name> or configure a default model in your pai provider config',
+            1,
+          )
         }
 
         // Create directory structure (including threads sub-dirs per SPEC)
@@ -66,8 +99,8 @@ export function createInitCommand(): Command {
           agent_id: id,
           kind,
           pai: {
-            provider: 'openai',
-            model: 'gpt-4o',
+            provider: paiProvider,
+            model: paiModel,
           },
           routing: {
             default: 'per-peer',
