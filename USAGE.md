@@ -100,16 +100,21 @@ Creates a new agent directory structure:
 **Options:**
 - `--kind system` — System agent (default: `user`)
 - `--kind user` — User-defined agent
+- `--provider <name>` — LLM provider name (default: from `pai model default`)
+- `--model <name>` — LLM model name (default: from pai provider config)
+
+Provider and model are read from `pai model default` if not specified. If no default is configured, `--provider` and `--model` are required.
 
 **Exit codes:**
 - `0` — Success
-- `1` — Agent already exists
+- `1` — Agent already exists, or no provider/model configured
 - `2` — Invalid arguments
 
 **Example:**
 ```bash
 xar init admin --kind system
 xar init my-agent --kind user
+xar init my-agent --kind user --provider my-azure --model gpt-5.2
 ```
 
 ### Start agent
@@ -182,23 +187,26 @@ my-agent    stopped
 
 **Output (text, single agent):**
 ```
-Agent: my-agent
-Status: stopped
-Kind: user
-Provider: openai
-Model: gpt-4o
+Agent:    my-agent (user)
+Dir:      ~/.theclaw/agents/my-agent
+Status:   stopped
+Provider: my-azure / gpt-5.2
+Routing:  per-peer
+Inbox:    0 events (last: never)
+Sessions: 0 session file(s)
 ```
 
 **Output (JSON):**
 ```json
 {
   "agent_id": "my-agent",
-  "status": "stopped",
   "kind": "user",
+  "dir": "~/.theclaw/agents/my-agent",
   "pai": {
-    "provider": "openai",
-    "model": "gpt-4o"
-  }
+    "provider": "my-azure",
+    "model": "gpt-5.2"
+  },
+  "inbox": { "eventCount": 0, "lastEventId": null, "lastEventAt": null }
 }
 ```
 
@@ -255,10 +263,9 @@ Located at `~/.theclaw/agents/<id>/config.json`:
 {
   "agent_id": "my-agent",
   "kind": "user",
-  "status": "stopped",
   "pai": {
-    "provider": "openai",
-    "model": "gpt-4o"
+    "provider": "my-azure",
+    "model": "gpt-5.2"
   },
   "routing": {
     "default": "per-peer"
