@@ -140,13 +140,18 @@ export function createChatCommand(): Command {
 
         const agentConfig = await loadAgentConfig(id, daemonConfig.theClawHome)
         const paiConfig = await loadConfig()
-        const provider = await resolveProvider(paiConfig, agentConfig.pai.provider)
+        const { provider } = await resolveProvider(paiConfig, agentConfig.pai.provider)
 
         const chatConfig: ChatConfig = {
           provider: agentConfig.pai.provider,
           model: agentConfig.pai.model,
-          apiKey: provider.apiKey,
+          apiKey: provider.apiKey ?? '',
           stream: true,
+          ...(provider.api !== undefined ? { api: provider.api } : {}),
+          ...(provider.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
+          ...(provider.reasoning !== undefined ? { reasoning: provider.reasoning } : {}),
+          ...(provider.contextWindow !== undefined ? { contextWindow: provider.contextWindow } : {}),
+          ...(provider.providerOptions !== undefined ? { providerOptions: provider.providerOptions } : {}),
         }
 
         const tools: Tool[] = [createBashExecTool()]
@@ -203,7 +208,7 @@ export function createChatCommand(): Command {
                 userMessage: text,
                 provider: agentConfig.pai.provider,
                 model: agentConfig.pai.model,
-                apiKey: provider.apiKey,
+                apiKey: provider.apiKey ?? '',
                 contextWindow: CONTEXT_WINDOW,
                 maxOutputTokens: MAX_OUTPUT_TOKENS,
                 logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, close: () => Promise.resolve() },

@@ -8,7 +8,51 @@ import { join } from 'path'
 import { getDaemonConfig, getSocketPath } from '../config.js'
 import { checkDaemonRunning } from '../daemon/pid.js'
 import { sendIpcMessage } from '../ipc/client.js'
+import { getThreadLib } from '../agent/thread-lib.js'
 import { CliError } from '../types.js'
+import type { AgentConfig } from '../agent/types.js'
+
+interface InboxInfo {
+  eventCount: number
+  lastEventId: number | null
+  lastEventAt: string | null
+}
+
+async function getInboxInfo(inboxPath: string): Promise<InboxInfo | null> {
+  try {
+    const lib = getThreadLib()
+    const store = await lib.open(inboxPath)
+    const events = await store.peek({ lastEventId: 0, limit: 9999 })
+    const last = events.length > 0 ? events[events.length - 1] : null
+    return {
+      eventCount: events.length,
+      lastEventId: last?.id ?? null,
+      lastEventAt: last?.created_at ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
+async function getSessionCount(agentDir: string): Promise<number> {
+  try {
+    const sessionsDir = join(agentDir, 'sessions')
+    const entries = await fs.readdir(sessionsDir)
+    return entries.filter((e) => e.endsWith('.jsonl')).length
+  } catch {
+    return 0
+  }
+}
+
+async function getMemoryFiles(agentDir: string): Promise<string[]> {
+  try {
+    const memDir = join(agentDir, 'memory')
+    const entries = await fs.readdir(memDir)
+    return entries.filter((e) => e.endsWith('.md'))
+  } catch {
+    return []
+  }
+}
 
 export function createStatusCommand(): Command {
   return new Command('status')
@@ -23,9 +67,12 @@ export function createStatusCommand(): Command {
 
         if (id) {
           // Verify agent exists on disk
-          const configPath = join(agentsDir, id, 'config.json')
+          const agentDir = join(agentsDir, id)
+          const configPath = join(agentDir, 'config.json')
+          let agentConfig: AgentConfig
           try {
-            await fs.access(configPath)
+            const raw = await fs.readFile(configPath, 'utf-8')
+            agentConfig = JSON.parse(raw) as AgentConfig
           } catch {
             throw new CliError(`Agent ${id} not found`, 1)
           }
@@ -47,25 +94,55 @@ export function createStatusCommand(): Command {
             }
           }
 
+          // Gather disk info
+          const inboxPath = join(agentDir, 'inbox')
+          const inbox = await getInboxInfo(inboxPath)
+          const sessionCount = await getSessionCount(agentDir)
+          const memoryFiles = await getMemoryFiles(agentDir)
+
           if (options.json) {
-            console.log(JSON.stringify({ agent_id: id, daemon_running: daemonRunning, ...runtimeStatus }))
+            console.log(JSON.stringify({
+              agent_id: id,
+              kind: agentConfig.kind,
+              dir: agentDir,
+              daemon_running: daemonRunning,
+              pai: agentConfig.pai,
+              routing: agentConfig.routing,
+              inbox: inbox ?? { error: 'unavailable' },
+              sessions: sessionCount,
+              memory_files: memoryFiles,
+              ...runtimeStatus,
+            }, null, 2))
           } else {
             const running = runtimeStatus['running'] as boolean | undefined
-            console.log(`Agent:   ${id}`)
-            console.log(`Status:  ${running ? 'running' : 'stopped'}`)
+            console.log(`Agent:    ${id} (${agentConfig.kind})`)
+            console.log(`Dir:      ${agentDir}`)
+            console.log(`Status:   ${running ? 'running' : 'stopped'}`)
+            console.log(`Provider: ${agentConfig.pai.provider} / ${agentConfig.pai.model}`)
+            console.log(`Routing:  ${agentConfig.routing.default}`)
+            if (inbox) {
+              const lastAt = inbox.lastEventAt ? new Date(inbox.lastEventAt).toISOString() : 'never'
+              console.log(`Inbox:    ${inbox.eventCount} events (last: ${lastAt})`)
+            } else {
+              console.log(`Inbox:    (unavailable)`)
+            }
+            console.log(`Sessions: ${sessionCount} session file(s)`)
+            if (memoryFiles.length > 0) {
+              console.log(`Memory:   ${memoryFiles.join(', ')}`)
+            }
             if (running) {
               const queueDepth = runtimeStatus['queueDepth'] as number | undefined
-              const lastActivity = runtimeStatus['lastActivityAt'] as number | undefined
               const processingCount = runtimeStatus['processingCount'] as number | undefined
-              if (queueDepth !== undefined) console.log(`Queue:   ${queueDepth} pending`)
-              if (processingCount !== undefined) console.log(`Active:  ${processingCount} processing`)
-              if (lastActivity) console.log(`Last:    ${new Date(lastActivity).toISOString()}`)
+              const lastActivity = runtimeStatus['lastActivityAt'] as number | undefined
+              if (queueDepth !== undefined) console.log(`Queue:    ${queueDepth} pending`)
+              if (processingCount !== undefined) console.log(`Active:   ${processingCount} processing`)
+              if (lastActivity) console.log(`Last:     ${new Date(lastActivity).toISOString()}`)
             }
           }
         } else {
           // List all agents with runtime status from daemon
-          let runningAgentIds: Set<string> = new Set()
-          let runtimeMap: Map<string, Record<string, unknown>> = new Map()
+          const runningAgentIds = new Set<string>()
+          const runtimeMap = new Map<string, Record<string, unknown>>()
 
           if (daemonRunning) {
             try {
@@ -89,14 +166,17 @@ export function createStatusCommand(): Command {
             for (const entry of entries) {
               if (!entry.isDirectory()) continue
               try {
-                const configPath = join(agentsDir, entry.name, 'config.json')
-                const configData = await fs.readFile(configPath, 'utf-8')
-                const agentConfig = JSON.parse(configData) as { kind: string }
+                const agentDir = join(agentsDir, entry.name)
+                const raw = await fs.readFile(join(agentDir, 'config.json'), 'utf-8')
+                const agentConfig = JSON.parse(raw) as AgentConfig
                 const runtime = runtimeMap.get(entry.name)
+                const inbox = await getInboxInfo(join(agentDir, 'inbox'))
                 agents.push({
                   id: entry.name,
                   kind: agentConfig.kind,
+                  provider: `${agentConfig.pai.provider}/${agentConfig.pai.model}`,
                   running: runningAgentIds.has(entry.name),
+                  inbox_events: inbox?.eventCount ?? '?',
                   ...(runtime ?? {}),
                 })
               } catch {
@@ -108,24 +188,29 @@ export function createStatusCommand(): Command {
           }
 
           if (options.json) {
-            console.log(JSON.stringify(agents))
+            console.log(JSON.stringify(agents, null, 2))
           } else {
             if (agents.length === 0) {
               console.log('No agents found')
             } else {
+              const colW = Math.max(...agents.map((a) => String(a['id']).length), 4) + 2
               for (const agent of agents) {
                 const status = agent['running'] ? 'running' : 'stopped'
-                console.log(`  ${agent['id']} (${agent['kind']}): ${status}`)
+                const id = String(agent['id']).padEnd(colW)
+                const kind = String(agent['kind']).padEnd(8)
+                const provider = String(agent['provider'])
+                const inbox = `inbox:${agent['inbox_events']}`
+                console.log(`  ${id}${kind}${status.padEnd(10)}${provider.padEnd(30)}${inbox}`)
               }
             }
           }
         }
       } catch (err) {
         if (err instanceof CliError) {
-          console.error(err.message)
+          process.stderr.write(err.message + '\n')
           process.exit(err.exitCode)
         }
-        console.error('Failed to get agent status:', err)
+        process.stderr.write('Failed to get agent status: ' + String(err) + '\n')
         process.exit(1)
       }
     })
