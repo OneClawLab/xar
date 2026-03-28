@@ -26,11 +26,16 @@ export async function createDaemonLogger(logDir?: string, foreground = false): P
 }
 
 /**
- * Create a fire-and-forget logger for an agent
- * (suitable for background daemon operations)
+ * Create a logger for an agent.
+ * In foreground mode, logs to both stderr and file (async init).
+ * In background mode, uses fire-and-forget file logger.
  */
-export function createAgentLogger(agentId: string, logDir?: string): Logger {
-  return createFireAndForgetLogger(logDir ?? defaultLogDir(), `agent-${agentId}`, 10000)
+export async function createAgentLogger(agentId: string, logDir?: string, foreground = false): Promise<Logger> {
+  const dir = logDir ?? defaultLogDir()
+  if (foreground) {
+    return createForegroundLogger(dir, `agent-${agentId}`, 10000)
+  }
+  return createFireAndForgetLogger(dir, `agent-${agentId}`, 10000)
 }
 
 /**

@@ -33,8 +33,10 @@ export class Daemon {
   private agents: Map<string, AgentRuntimeState> = new Map()
   private ipcConnections: Map<string, IpcConnection> = new Map()
   private logger: Logger | null = null
+  private foreground = false
 
   async start(foreground = false): Promise<void> {
+    this.foreground = foreground
     try {
       this.logger = await createDaemonLogger(undefined, foreground)
       this.logger.info('Daemon starting...')
@@ -123,7 +125,7 @@ export class Daemon {
     const { loadAgentConfig } = await import('../agent/config.js')
     await loadAgentConfig(agentId, this.config.theClawHome) // throws CliError if not found
 
-    const agentLogger = createAgentLogger(agentId)
+    const agentLogger = await createAgentLogger(agentId, undefined, this.foreground)
     agentLogger.info('Agent starting')
 
     const queue = new AsyncQueueImpl<InboundMessage>()
@@ -141,7 +143,7 @@ export class Daemon {
       this.logger?.warn(`No IPC connection available when starting agent ${agentId}, run-loop will use first available connection`)
     }
 
-    const runLoop = new RunLoopImpl(agentId, queue, this.ipcConnections)
+    const runLoop = new RunLoopImpl(agentId, queue, this.ipcConnections, agentLogger)
     const runLoopPromise = runLoop.start()
 
     this.agents.set(agentId, {
@@ -223,10 +225,6 @@ export class Daemon {
         case 'agent_stop': {
           if (!message.agent_id) break
           this.logger?.info(`IPC request: stop agent ${message.agent_id}`)
-          if (!this.agents.has(message.agent_id)) {
-            await this.ipcServer.sendToConnection(connId, { type: 'error', error: `Agent ${message.agent_id} is not running` })
-            break
-          }
           await this.stopAgent(message.agent_id)
           await this.saveStartedAgents()
           await this.ipcServer.sendToConnection(connId, { type: 'ok' })

@@ -12,7 +12,6 @@ import { buildContext } from './context.js'
 import { Deliver } from './deliver.js'
 import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
 import type { IpcConnection } from '../ipc/types.js'
-import { createAgentLogger } from '../logging.js'
 import type { Logger } from '../logging.js'
 import { compactSession } from './memory.js'
 import { getDaemonConfig } from '../config.js'
@@ -32,8 +31,15 @@ export class RunLoopImpl implements RunLoop {
     private queue: AsyncQueue<InboundMessage>,
     // Map of active IPC connections — we pick the best one at message-processing time
     private ipcConnections: Map<string, IpcConnection>,
+    logger?: Logger,
   ) {
-    this.logger = createAgentLogger(agentId)
+    this.logger = logger ?? {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+      close: async () => {},
+    }
   }
 
   async start(): Promise<void> {
