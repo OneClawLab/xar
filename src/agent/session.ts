@@ -3,7 +3,7 @@
  */
 
 import { promises as fs } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 
 export interface SessionMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -171,7 +171,7 @@ export async function loadCompactState(statePath: string): Promise<CompactState>
  * Save compact state
  */
 export async function saveCompactState(statePath: string, state: CompactState): Promise<void> {
-  const dir = statePath.substring(0, statePath.lastIndexOf('/'))
+  const dir = dirname(statePath)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(statePath, JSON.stringify(state), 'utf-8')
 }

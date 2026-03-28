@@ -163,6 +163,10 @@ export class Daemon {
   private async stopAgent(agentId: string): Promise<void> {
     const state = this.agents.get(agentId)
     if (!state) {
+      // Verify agent exists on disk — if not, it's an error
+      const { loadAgentConfig } = await import('../agent/config.js')
+      await loadAgentConfig(agentId, this.config.theClawHome) // throws CliError if not found
+      // Agent exists but is not running — that's fine, nothing to do
       this.logger?.info(`Agent ${agentId} is not running`)
       return
     }
@@ -170,6 +174,10 @@ export class Daemon {
     state.logger.info('Agent stopping')
     await state.runLoop.stop()
     this.agents.delete(agentId)
+
+    // Wait for run-loop to fully drain before closing the logger,
+    // otherwise the run-loop's final log write races with stream.end().
+    await state.runLoopPromise.catch(() => {})
 
     this.logger?.info(`Agent ${agentId} stopped`)
     state.logger.info('Agent stopped')
