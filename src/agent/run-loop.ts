@@ -69,14 +69,15 @@ export class RunLoopImpl implements RunLoop {
   }
 
   private async processMessage(msg: InboundMessage): Promise<void> {
-    this.logger.info(`Processing message from ${msg.source}`)
+    this.logger.info(`Processing message: source=${msg.source} channel=${msg.reply_context.channel_id} peer=${msg.reply_context.peer_id}`)
 
     const theClawHome = getDaemonConfig().theClawHome
     const config = await loadAgentConfig(this.agentId, theClawHome)
 
     // Route message to appropriate thread
     const threadStore = await routeMessage(this.agentId, config, msg)
-    this.logger.debug('Message routed to thread')
+    const threadId = determineThreadId(config, msg.source)
+    this.logger.info(`Message routed: thread=${threadId}`)
 
     // Write inbound message to thread
     await threadStore.push({
@@ -94,10 +95,14 @@ export class RunLoopImpl implements RunLoop {
       model: config.pai.model,
       apiKey: provider.apiKey,
       stream: true,
+      ...(provider.provider.api !== undefined && { api: provider.provider.api }),
+      ...(provider.provider.baseUrl !== undefined && { baseUrl: provider.provider.baseUrl }),
+      ...(provider.provider.reasoning !== undefined && { reasoning: provider.provider.reasoning }),
+      ...(provider.provider.contextWindow !== undefined && { contextWindow: provider.provider.contextWindow }),
+      ...(provider.provider.maxTokens !== undefined && { maxTokens: provider.provider.maxTokens }),
+      ...(provider.provider.providerOptions !== undefined && { providerOptions: provider.provider.providerOptions }),
     }
 
-    // Derive thread ID (single source of truth via router)
-    const threadId = determineThreadId(config, msg.source)
     const agentDir = join(theClawHome, 'agents', this.agentId)
     const sessionFile = join(agentDir, 'sessions', `${threadId}.jsonl`)
 
@@ -128,8 +133,10 @@ export class RunLoopImpl implements RunLoop {
 
     const conn = this.getConn()
     if (!conn) {
+      this.logger.error(`No IPC connection available for streaming (active connections: ${this.ipcConnections.size})`)
       throw new Error('No IPC connection available for streaming')
     }
+    this.logger.debug(`Using IPC connection: ${conn.id}`)
 
     const chunkWriter = new IpcChunkWriter(conn, msg.reply_context)
     const deliver = new Deliver(conn, msg.reply_context)
@@ -137,7 +144,7 @@ export class RunLoopImpl implements RunLoop {
 
     try {
       await deliver.streamStart(sessionId)
-      this.logger.debug(`Streaming started for session ${sessionId}`)
+      this.logger.info(`Stream started: session=${sessionId} model=${config.pai.model}`)
 
       const controller = new AbortController()
       const maxAttempts = config.retry.max_attempts
@@ -145,7 +152,7 @@ export class RunLoopImpl implements RunLoop {
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
-          this.logger.debug(`LLM call attempt ${attempt + 1}/${maxAttempts}`)
+          this.logger.info(`LLM call: attempt=${attempt + 1}/${maxAttempts} provider=${config.pai.provider} model=${config.pai.model}`)
 
           for await (const event of chat(chatInput, chatConfig, chunkWriter, tools, controller.signal)) {
             if (event.type === 'thinking_delta') {
@@ -160,11 +167,11 @@ export class RunLoopImpl implements RunLoop {
                 content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
               }))
               await threadStore.pushBatch(threadEvents)
-              this.logger.debug(`Response written to thread (${threadEvents.length} events)`)
+              this.logger.info(`LLM response written to thread: ${threadEvents.length} events`)
             }
           }
 
-          this.logger.info('Message processed successfully')
+          this.logger.info(`LLM call succeeded: attempt=${attempt + 1}`)
           lastError = null
           break
         } catch (err) {
@@ -178,19 +185,21 @@ export class RunLoopImpl implements RunLoop {
             msg2.includes('econnrefused')
 
           if (!isRetryable || attempt === maxAttempts - 1) {
-            this.logger.error(`LLM call failed: ${lastError.message}`)
+            this.logger.error(`LLM call failed (attempt=${attempt + 1}, retryable=${isRetryable}): ${lastError.message}`)
             throw lastError
           }
 
           const delay = Math.pow(2, attempt) * 1000
-          this.logger.warn(`LLM call failed (attempt ${attempt + 1}), retrying in ${delay}ms`)
+          this.logger.warn(`LLM call failed (attempt=${attempt + 1}), retrying in ${delay}ms: ${lastError.message}`)
           await new Promise((resolve) => setTimeout(resolve, delay))
         }
       }
 
       await deliver.streamEnd(sessionId)
+      this.logger.info(`Message processed successfully: session=${sessionId}`)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
+      this.logger.error(`Message processing failed: session=${sessionId} error=${errorMsg}`)
       await deliver.streamError(sessionId, errorMsg)
       await threadStore.push({
         source: 'system',

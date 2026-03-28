@@ -51,7 +51,7 @@ export function createDaemonCommand(): Command {
         if (opts.foreground) {
           // Foreground mode: run daemon directly in this process
           const { startDaemon } = await import('../daemon/index.js')
-          await startDaemon()
+          await startDaemon(true)
         } else {
           // Background mode: spawn detached child using process.execPath + process.argv[1]
           // This avoids the Windows .cmd shim issue with spawn('xar', ...)

@@ -9,7 +9,7 @@ export class Deliver {
   constructor(private conn: IpcConnection, private replyContext: ReplyContext) {}
 
   async streamStart(sessionId: string): Promise<void> {
-    this.conn.send({
+    await this.conn.send({
       type: 'stream_start',
       reply_context: this.replyContext,
       session_id: sessionId,
@@ -17,7 +17,7 @@ export class Deliver {
   }
 
   async streamToken(sessionId: string, token: string): Promise<void> {
-    this.conn.send({
+    await this.conn.send({
       type: 'stream_token',
       session_id: sessionId,
       token,
@@ -25,7 +25,7 @@ export class Deliver {
   }
 
   async streamThinking(sessionId: string, delta: string): Promise<void> {
-    this.conn.send({
+    await this.conn.send({
       type: 'stream_thinking',
       session_id: sessionId,
       delta,
@@ -33,14 +33,14 @@ export class Deliver {
   }
 
   async streamEnd(sessionId: string): Promise<void> {
-    this.conn.send({
+    await this.conn.send({
       type: 'stream_end',
       session_id: sessionId,
     })
   }
 
   async streamError(sessionId: string, error: string): Promise<void> {
-    this.conn.send({
+    await this.conn.send({
       type: 'stream_error',
       session_id: sessionId,
       error,

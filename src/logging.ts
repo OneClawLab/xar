@@ -3,7 +3,7 @@
  */
 
 import { join } from 'path'
-import { createFileLogger, createFireAndForgetLogger, type Logger } from './repo-utils/logger.js'
+import { createFileLogger, createFireAndForgetLogger, createForegroundLogger, type Logger } from './repo-utils/logger.js'
 import { getTheClawHome } from './config.js'
 
 export type { Logger }
@@ -13,10 +13,16 @@ function defaultLogDir(): string {
 }
 
 /**
- * Create a logger for the daemon
+ * Create a logger for the daemon.
+ * In foreground mode, logs to both stderr and file.
+ * In background mode, logs to file only.
  */
-export async function createDaemonLogger(logDir?: string): Promise<Logger> {
-  return createFileLogger(logDir ?? defaultLogDir(), 'xar', 10000)
+export async function createDaemonLogger(logDir?: string, foreground = false): Promise<Logger> {
+  const dir = logDir ?? defaultLogDir()
+  if (foreground) {
+    return createForegroundLogger(dir, 'xar', 10000)
+  }
+  return createFileLogger(dir, 'xar', 10000)
 }
 
 /**

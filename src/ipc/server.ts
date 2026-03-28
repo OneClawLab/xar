@@ -36,6 +36,7 @@ export class IpcServerImpl implements IpcServer {
   private connections: Map<string, IpcConnection> = new Map()
   private messageHandlers: ((message: IpcMessage, connId: string) => Promise<void>)[] = []
   private connectionHandlers: ((conn: IpcConnection, connId: string) => void)[] = []
+  private disconnectHandlers: ((connId: string) => void)[] = []
   private agentQueues: Map<string, any> = new Map()
   private config: IpcServerConfig
   private connectionCounter = 0
@@ -134,12 +135,19 @@ export class IpcServerImpl implements IpcServer {
             await handler(message, connId)
           }
         } catch (err) {
-          console.error('Error processing IPC message:', err)
+          // Fire disconnect handlers so daemon can clean up
+          for (const handler of this.disconnectHandlers) {
+            handler(connId)
+          }
+          process.stderr.write(`[IpcServer] error processing message on ${connId}: ${err instanceof Error ? err.message : String(err)}\n`)
         }
       })
 
       ws.on('close', () => {
         this.connections.delete(connId)
+        for (const handler of this.disconnectHandlers) {
+          handler(connId)
+        }
       })
 
       ws.on('error', (err) => {
@@ -208,6 +216,10 @@ export class IpcServerImpl implements IpcServer {
 
   onConnection(handler: (conn: IpcConnection, connId: string) => void): void {
     this.connectionHandlers.push(handler)
+  }
+
+  onDisconnect(handler: (connId: string) => void): void {
+    this.disconnectHandlers.push(handler)
   }
 }
 

@@ -23,5 +23,6 @@ export interface IpcServer {
   registerQueue(agentId: string, queue: any): void
   onMessage(handler: (message: IpcMessage, connId: string) => Promise<void>): void
   onConnection(handler: (conn: IpcConnection, connId: string) => void): void
+  onDisconnect(handler: (connId: string) => void): void
 }
 

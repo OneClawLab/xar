@@ -34,9 +34,9 @@ export class Daemon {
   private ipcConnections: Map<string, IpcConnection> = new Map()
   private logger: Logger | null = null
 
-  async start(): Promise<void> {
+  async start(foreground = false): Promise<void> {
     try {
-      this.logger = await createDaemonLogger()
+      this.logger = await createDaemonLogger(undefined, foreground)
       this.logger.info('Daemon starting...')
 
       await writePidFile(this.config.theClawHome, process.pid)
@@ -48,9 +48,12 @@ export class Daemon {
       this.ipcServer.onMessage(this.handleIpcMessage.bind(this))
       this.ipcServer.onConnection((conn: IpcConnection, connId: string) => {
         this.ipcConnections.set(connId, conn)
-        this.logger?.info(`IPC connection established: ${connId}`)
+        this.logger?.info(`IPC connection established: ${connId} (total: ${this.ipcConnections.size})`)
       })
-
+      this.ipcServer.onDisconnect((connId: string) => {
+        this.ipcConnections.delete(connId)
+        this.logger?.info(`IPC connection closed: ${connId} (remaining: ${this.ipcConnections.size})`)
+      })
       // Load agents with status 'started' — IPC server is up so connections can arrive
       await this.loadAgents()
 
@@ -193,14 +196,17 @@ export class Daemon {
     try {
       switch (message.type) {
         case 'inbound_message': {
-          if (!message.agent_id || !message.message) break
+          if (!message.agent_id || !message.message) {
+            this.logger?.warn(`inbound_message malformed: agent_id=${message.agent_id ?? 'missing'} message=${message.message ? 'present' : 'missing'}`)
+            break
+          }
           const state = this.agents.get(message.agent_id)
           if (state) {
             state.queue.push(message.message)
             state.lastActivityAt = Date.now()
-            state.logger.debug(`Received message from ${message.message.source}`)
+            this.logger?.info(`inbound_message queued: agent=${message.agent_id} source=${message.message.source} queue_depth=${state.queue.size()}`)
           } else {
-            this.logger?.warn(`Received message for unknown/stopped agent: ${message.agent_id}`)
+            this.logger?.warn(`inbound_message dropped: agent=${message.agent_id} not running (source=${message.message?.source ?? 'unknown'})`)
           }
           break
         }
@@ -280,7 +286,7 @@ export class Daemon {
   }
 }
 
-export async function startDaemon(): Promise<void> {
+export async function startDaemon(foreground = false): Promise<void> {
   const daemon = new Daemon()
-  await daemon.start()
+  await daemon.start(foreground)
 }
