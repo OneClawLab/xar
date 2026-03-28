@@ -3,7 +3,7 @@
  */
 
 import type { ThreadStore } from 'thread'
-import type { ChatInput, Message } from 'pai'
+import type { ChatInput, Message, MessageContent } from 'pai'
 import { promises as fs } from 'fs'
 import { join } from 'path'
 import { getDaemonConfig } from '../config.js'
@@ -72,20 +72,35 @@ async function loadThreadHistory(threadStore: ThreadStore): Promise<Message[]> {
         content: event.content,
       })
     } else if (event.type === 'record') {
-      // Record from previous LLM turn
+      // Record from previous LLM turn — content may be a JSON-serialized envelope
+      // containing { content, tool_calls?, tool_call_id?, name? }
+      let parsed: Record<string, unknown> | null = null
+      try {
+        const candidate = JSON.parse(event.content) as unknown
+        if (candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate) && 'content' in candidate) {
+          parsed = candidate as Record<string, unknown>
+        }
+      } catch {
+        // plain string content — no envelope
+      }
+
       if (event.source === 'self') {
-        // Assistant response
-        messages.push({
+        const msg: Message = {
           role: 'assistant',
-          content: event.content,
-        })
+          content: parsed ? (parsed['content'] as MessageContent) : event.content,
+        }
+        if (parsed?.['tool_calls'] !== undefined) {
+          ;(msg as any).tool_calls = parsed['tool_calls']
+        }
+        messages.push(msg)
       } else if (event.source.startsWith('tool:')) {
-        // Tool result
         const toolName = event.source.substring('tool:'.length)
+        const toolCallId = parsed?.['tool_call_id']
         messages.push({
           role: 'tool',
-          content: event.content,
-          name: toolName,
+          content: parsed ? (parsed['content'] as MessageContent) : event.content,
+          name: (parsed?.['name'] as string | undefined) ?? toolName,
+          ...(typeof toolCallId === 'string' && toolCallId ? { tool_call_id: toolCallId } : {}),
         })
       }
     }

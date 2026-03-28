@@ -160,12 +160,21 @@ export class RunLoopImpl implements RunLoop {
             }
 
             if (event.type === 'chat_end') {
-              const threadEvents = event.newMessages.map((m: any) => ({
-                source: m.role === 'assistant' ? 'self' : `tool:${m.name ?? ''}`,
-                type: 'record' as const,
-                ...(m.role === 'tool' ? { subtype: 'toolcall' } : {}),
-                content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-              }))
+              const threadEvents = event.newMessages.map((m: any) => {
+                // Serialize the full message so tool_call_id / tool_calls are preserved
+                const serialized = JSON.stringify({
+                  content: m.content,
+                  ...(m.tool_calls !== undefined && { tool_calls: m.tool_calls }),
+                  ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
+                  ...(m.name !== undefined && { name: m.name }),
+                })
+                return {
+                  source: m.role === 'assistant' ? 'self' : `tool:${m.name ?? ''}`,
+                  type: 'record' as const,
+                  ...(m.role === 'tool' ? { subtype: 'toolcall' } : {}),
+                  content: serialized,
+                }
+              })
               await threadStore.pushBatch(threadEvents)
               this.logger.info(`LLM response written to thread: ${threadEvents.length} events`)
             }
