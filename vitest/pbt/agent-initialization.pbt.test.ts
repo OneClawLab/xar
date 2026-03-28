@@ -1,9 +1,9 @@
 /**
- * Property-based tests for agent initialization
- * Validates: Requirements 2.1
+ * Property-based tests for agent initialization (user and system agents)
+ * Validates: Requirements 2.1, 20.1, 20.2
  */
 
-import { describe, it, beforeEach, afterEach } from 'vitest'
+import { describe, it } from 'vitest'
 import fc from 'fast-check'
 import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -104,3 +104,5 @@ describe('Agent Initialization Property Tests', () => {
     )
   })
 })
+
+

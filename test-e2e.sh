@@ -36,6 +36,10 @@ PROVIDER=$(pai model default --json 2>/dev/null | json_field_from_stdin "default
 if [[ -z "$PROVIDER" ]]; then fail "No default provider — run: pai model default --name <provider>"; exit 1; fi
 pass "Default provider: $PROVIDER"
 
+# Ensure no stale daemon from a previous run
+$XAR daemon stop 2>/dev/null || true
+sleep 1
+
 # ══════════════════════════════════════════════════════════════
 # 1. daemon start
 # ══════════════════════════════════════════════════════════════

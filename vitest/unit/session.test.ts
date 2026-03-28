@@ -102,5 +102,39 @@ describe('session', () => {
       expect(transcript).toContain('bash_exec')
       expect(transcript).toContain('Tool result')
     })
+
+    it('should format tool result messages', () => {
+      const messages: SessionMessage[] = [
+        { role: 'tool', content: 'output', name: 'bash' },
+      ]
+      const transcript = buildTranscript(messages)
+      expect(transcript).toContain('Tool result (bash): output')
+    })
+  })
+
+  describe('splitMessages - large dataset', () => {
+    it('should split correctly when budget is tight', () => {
+      const messages: SessionMessage[] = []
+      for (let i = 0; i < 20; i++) {
+        messages.push({ role: 'user', content: `This is message number ${i} with some content` })
+        messages.push({ role: 'assistant', content: `This is reply number ${i} with some content` })
+      }
+      const { toSummarize, recentRaw } = splitMessages(messages, 50)
+      expect(toSummarize.length).toBeGreaterThan(0)
+      expect(recentRaw.length).toBeGreaterThan(0)
+      expect(toSummarize.length + recentRaw.length).toBe(40)
+    })
+
+    it('should put all messages in recentRaw when budget is large', () => {
+      const messages: SessionMessage[] = [
+        { role: 'user', content: 'msg1' },
+        { role: 'assistant', content: 'reply1' },
+        { role: 'user', content: 'msg2' },
+        { role: 'assistant', content: 'reply2' },
+      ]
+      const { toSummarize, recentRaw } = splitMessages(messages, 10000)
+      expect(recentRaw).toHaveLength(4)
+      expect(toSummarize).toHaveLength(0)
+    })
   })
 })

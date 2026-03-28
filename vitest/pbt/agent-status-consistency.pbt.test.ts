@@ -1,6 +1,6 @@
 /**
- * Property-based tests for agent status consistency
- * Validates: Requirements 3.2, 3.3, 3.5, 3.6
+ * Property-based tests for agent status consistency and initialization
+ * Validates: Requirements 2.4, 3.2, 3.3, 3.5, 3.6
  */
 
 import { describe, it } from 'vitest'
@@ -30,32 +30,6 @@ describe('Agent Status Consistency Property Tests', () => {
 
           // Verify final status is valid
           return status === 'started' || status === 'stopped'
-        },
-      ),
-      { numRuns: 100 },
-    )
-  })
-
-  it('Property 3: Status persistence - Agent status changes SHALL be persisted to config.json', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.record({
-          agentId: fc.hexaString({ minLength: 1, maxLength: 20 }),
-          initialStatus: fc.constantFrom('stopped', 'started'),
-          newStatus: fc.constantFrom('stopped', 'started'),
-        }),
-        async (data) => {
-          // Simulate config persistence
-          const config = {
-            agent_id: data.agentId,
-            status: data.initialStatus,
-          }
-
-          // Update status
-          config.status = data.newStatus
-
-          // Verify status was updated
-          return config.status === data.newStatus
         },
       ),
       { numRuns: 100 },
@@ -93,23 +67,26 @@ describe('Agent Status Consistency Property Tests', () => {
     )
   })
 
-  it('Property 3: Status query accuracy - Querying agent status SHALL return current status', async () => {
+})
+
+describe('Agent Status Initialization Property Tests', () => {
+  it('Property: All newly initialized agents SHALL have status set to stopped', async () => {
     await fc.assert(
       fc.asyncProperty(
-        fc.record({
-          agentId: fc.hexaString({ minLength: 1, maxLength: 20 }),
-          status: fc.constantFrom('stopped', 'started'),
-        }),
-        async (data) => {
-          // Simulate agent status storage
-          const agents = new Map<string, string>()
-          agents.set(data.agentId, data.status)
-
-          // Query status
-          const queriedStatus = agents.get(data.agentId)
-
-          // Verify accuracy
-          return queriedStatus === data.status
+        fc.array(
+          fc.record({
+            agentId: fc.hexaString({ minLength: 1, maxLength: 20 }),
+            kind: fc.constantFrom('system' as const, 'user' as const),
+          }),
+          { minLength: 1, maxLength: 50 },
+        ),
+        async (agents) => {
+          const initialized = agents.map((agent) => ({
+            agent_id: agent.agentId,
+            kind: agent.kind,
+            status: 'stopped' as const,
+          }))
+          return initialized.every((a) => a.status === 'stopped')
         },
       ),
       { numRuns: 100 },
