@@ -32,6 +32,22 @@ export class Deliver {
     })
   }
 
+  async streamToolCall(sessionId: string, toolCall: unknown): Promise<void> {
+    await this.conn.send({
+      type: 'stream_tool_call',
+      session_id: sessionId,
+      tool_call: toolCall,
+    })
+  }
+
+  async streamToolResult(sessionId: string, toolResult: unknown): Promise<void> {
+    await this.conn.send({
+      type: 'stream_tool_result',
+      session_id: sessionId,
+      tool_result: toolResult,
+    })
+  }
+
   async streamEnd(sessionId: string): Promise<void> {
     await this.conn.send({
       type: 'stream_end',

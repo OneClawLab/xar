@@ -165,6 +165,14 @@ export class RunLoopImpl implements RunLoop {
               await deliver.streamThinking(sessionId, event.delta)
             }
 
+            if (event.type === 'tool_call') {
+              await deliver.streamToolCall(sessionId, { name: event.name, arguments: event.args })
+            }
+
+            if (event.type === 'tool_result') {
+              await deliver.streamToolResult(sessionId, event.result)
+            }
+
             if (event.type === 'chat_end') {
               const threadEvents = event.newMessages.map((m: any) => {
                 // Serialize the full message so tool_call_id / tool_calls are preserved

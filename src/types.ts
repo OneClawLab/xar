@@ -22,6 +22,8 @@ export type IpcMessageType =
   | 'stream_start'
   | 'stream_token'
   | 'stream_thinking'
+  | 'stream_tool_call'
+  | 'stream_tool_result'
   | 'stream_end'
   | 'stream_error'
   | 'agent_start'
@@ -39,6 +41,10 @@ export interface IpcMessage {
   session_id?: string
   token?: string
   delta?: string
+  /** tool_call event payload (JSON-encoded) */
+  tool_call?: unknown
+  /** tool_result event payload (JSON-encoded) */
+  tool_result?: unknown
   data?: unknown
   error?: string
 }
