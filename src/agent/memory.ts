@@ -70,7 +70,15 @@ function stateFilePath(agentDir: string, threadId: string): string {
   return join(agentDir, 'sessions', `compact-state-${threadId}.json`)
 }
 
-export async function compactSession(opts: CompactOptions): Promise<void> {
+export interface CompactResult {
+  compacted: boolean
+  reason?: 'threshold' | 'interval'
+  before_tokens?: number
+  after_tokens?: number
+  budget_tokens?: number
+}
+
+export async function compactSession(opts: CompactOptions): Promise<CompactResult> {
   const { agentDir, threadId, sessionFile, systemPrompt, userMessage, provider, model, apiKey, contextWindow, maxOutputTokens, logger } = opts
 
   const inputBudget = contextWindow - maxOutputTokens - SAFETY_MARGIN
@@ -82,15 +90,18 @@ export async function compactSession(opts: CompactOptions): Promise<void> {
   const messages = await loadSessionMessages(sessionFile)
   if (messages.length === 0) {
     await saveCompactState(statePath, state)
-    return
+    return { compacted: false }
   }
 
   const totalTokens = estimateTotalTokens(systemPrompt, messages, userMessage)
 
   if (!shouldCompact(totalTokens, inputBudget, state)) {
     await saveCompactState(statePath, state)
-    return
+    return { compacted: false }
   }
+
+  const overContext = totalTokens > inputBudget * CONTEXT_USAGE_THRESHOLD
+  const reason: 'threshold' | 'interval' = overContext ? 'threshold' : 'interval'
 
   const usagePct = Math.round((totalTokens / inputBudget) * 100)
   logger.info(`Compacting session for thread ${threadId} (tokens≈${totalTokens}, budget=${inputBudget}, turn=${state.turnCount}, usage=${usagePct}%)`)
@@ -103,7 +114,7 @@ export async function compactSession(opts: CompactOptions): Promise<void> {
     logger.info(`Nothing to summarize for thread ${threadId}, skipping compaction`)
     state.lastCompactedAt = state.turnCount
     await saveCompactState(statePath, state)
-    return
+    return { compacted: false }
   }
 
   let summaryText: string | null = null
@@ -146,6 +157,8 @@ export async function compactSession(opts: CompactOptions): Promise<void> {
   const newTokens = estimateTotalTokens(systemPrompt, newMessages, userMessage)
   const newPct = Math.round((newTokens / inputBudget) * 100)
   logger.info(`Session compaction complete for thread ${threadId} (tokens≈${newTokens}, usage=${newPct}%)`)
+
+  return { compacted: true, reason, before_tokens: totalTokens, after_tokens: newTokens, budget_tokens: inputBudget }
 }
 
 const SUMMARIZER_SYSTEM_PROMPT = `You are compressing the memory of an AI agent. The summary you produce will be injected into the agent's system prompt for future conversations. Write in second person ("You previously...") so the agent can read it as its own memory.

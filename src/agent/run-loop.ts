@@ -13,7 +13,8 @@ import { Deliver } from './deliver.js'
 import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
 import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
-import { compactSession } from './memory.js'
+import { compactSession, estimateTotalTokens } from './memory.js'
+import { loadSessionMessages } from './session.js'
 import { getDaemonConfig } from '../config.js'
 import { join } from 'path'
 
@@ -116,25 +117,6 @@ export class RunLoopImpl implements RunLoop {
     const chatInput = await buildContext(this.agentId, config, threadStore, msg, threadId)
     this.logger.debug('LLM context built')
 
-    // Run session compact with real systemPrompt + userMessage for accurate token count
-    try {
-      await compactSession({
-        agentDir,
-        threadId,
-        sessionFile,
-        systemPrompt: chatInput.system ?? '',
-        userMessage: msg.content,
-        provider: config.pai.provider,
-        model: config.pai.model,
-        apiKey: provider.apiKey,
-        contextWindow: 128000,
-        maxOutputTokens: 4096,
-        logger: this.logger,
-      })
-    } catch (err) {
-      this.logger.warn(`Session compact failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
-    }
-
     const tools: Tool[] = [createBashExecTool()]
 
     const conn = this.getConn()
@@ -144,9 +126,43 @@ export class RunLoopImpl implements RunLoop {
     }
     this.logger.debug(`Using IPC connection: ${conn.id}`)
 
+    // Run session compact with real systemPrompt + userMessage for accurate token count
+    const CONTEXT_WINDOW = 128000
+    const MAX_OUTPUT_TOKENS = 4096
+    const SAFETY_MARGIN = 512
+    const inputBudget = CONTEXT_WINDOW - MAX_OUTPUT_TOKENS - SAFETY_MARGIN
+
     const chunkWriter = new IpcChunkWriter(conn, msg.reply_context)
     const deliver = new Deliver(conn, msg.reply_context)
     const sessionId = `${msg.reply_context.channel_id}:${msg.reply_context.session_id}`
+
+    try {
+      const compactResult = await compactSession({
+        agentDir,
+        threadId,
+        sessionFile,
+        systemPrompt: chatInput.system ?? '',
+        userMessage: msg.content,
+        provider: config.pai.provider,
+        model: config.pai.model,
+        apiKey: provider.apiKey,
+        contextWindow: CONTEXT_WINDOW,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        logger: this.logger,
+      })
+      if (compactResult.compacted) {
+        await deliver.streamCompactStart(sessionId, compactResult.reason ?? 'threshold')
+        await deliver.streamCompactEnd(sessionId, compactResult.before_tokens ?? 0, compactResult.after_tokens ?? 0)
+        await deliver.streamCtxUsage(sessionId, compactResult.after_tokens ?? 0, compactResult.budget_tokens ?? inputBudget)
+      } else {
+        // Not compacted — still send ctx_usage for current state
+        const messages = await loadSessionMessages(sessionFile)
+        const totalTokens = estimateTotalTokens(chatInput.system ?? '', messages, msg.content)
+        await deliver.streamCtxUsage(sessionId, totalTokens, inputBudget)
+      }
+    } catch (err) {
+      this.logger.warn(`Session compact failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
+    }
 
     try {
       await deliver.streamStart(sessionId)

@@ -62,4 +62,35 @@ export class Deliver {
       error,
     })
   }
+
+  async streamCtxUsage(sessionId: string, totalTokens: number, budgetTokens: number): Promise<void> {
+    await this.conn.send({
+      type: 'stream_ctx_usage',
+      reply_context: this.replyContext,
+      session_id: sessionId,
+      ctx_usage: {
+        total_tokens: totalTokens,
+        budget_tokens: budgetTokens,
+        pct: budgetTokens > 0 ? Math.round((totalTokens / budgetTokens) * 100) : 0,
+      },
+    })
+  }
+
+  async streamCompactStart(sessionId: string, reason: 'threshold' | 'interval'): Promise<void> {
+    await this.conn.send({
+      type: 'stream_compact_start',
+      reply_context: this.replyContext,
+      session_id: sessionId,
+      compact_start: { reason },
+    })
+  }
+
+  async streamCompactEnd(sessionId: string, beforeTokens: number, afterTokens: number): Promise<void> {
+    await this.conn.send({
+      type: 'stream_compact_end',
+      reply_context: this.replyContext,
+      session_id: sessionId,
+      compact_end: { before_tokens: beforeTokens, after_tokens: afterTokens },
+    })
+  }
 }
