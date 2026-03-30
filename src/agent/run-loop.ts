@@ -53,19 +53,25 @@ export class RunLoopImpl implements RunLoop {
       for await (const msg of this.queue) {
         if (this.stopped) break
 
-        // Determine thread key so same-thread messages stay serial
-        const config = await loadAgentConfig(this.agentId, getDaemonConfig().theClawHome)
-        const threadId = determineThreadId(config, msg.source)
+        try {
+          // Determine thread key so same-thread messages stay serial
+          const config = await loadAgentConfig(this.agentId, getDaemonConfig().theClawHome)
+          const threadId = determineThreadId(config, msg.source)
 
-        // Chain onto the per-thread lock (serial within thread, concurrent across threads)
-        const prev = this.threadLocks.get(threadId) ?? Promise.resolve()
-        const task = prev.then(() => this.processMessage(msg)).catch((err) => {
+          // Chain onto the per-thread lock (serial within thread, concurrent across threads)
+          const prev = this.threadLocks.get(threadId) ?? Promise.resolve()
+          const task = prev.then(() => this.processMessage(msg)).catch((err) => {
+            const errorMsg = err instanceof Error ? err.message : String(err)
+            this.logger.error(`Error processing message: ${errorMsg}`)
+          })
+          this.threadLocks.set(threadId, task)
+          this.inflight.add(task)
+          void task.then(() => { this.inflight.delete(task) })
+        } catch (err) {
+          // Config load or routing failed for this message — skip it, keep the loop alive
           const errorMsg = err instanceof Error ? err.message : String(err)
-          this.logger.error(`Error processing message: ${errorMsg}`)
-        })
-        this.threadLocks.set(threadId, task)
-        this.inflight.add(task)
-        void task.then(() => { this.inflight.delete(task) })
+          this.logger.error(`Error dispatching message (skipped): ${errorMsg}`)
+        }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
