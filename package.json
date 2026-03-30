@@ -1,6 +1,6 @@
 {
   "name": "@theclawlab/xar",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "xar - agent runtime daemon and CLI",
   "type": "module",
   "main": "dist/index.js",

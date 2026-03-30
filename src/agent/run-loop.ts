@@ -25,6 +25,10 @@ export interface RunLoop {
 export class RunLoopImpl implements RunLoop {
   private stopped = false
   private logger: Logger
+  /** Per-thread serial lock: messages within the same thread queue behind each other */
+  private threadLocks = new Map<string, Promise<void>>()
+  /** Track in-flight tasks so stop() can wait for them */
+  private inflight = new Set<Promise<void>>()
 
   constructor(
     private agentId: string,
@@ -49,19 +53,27 @@ export class RunLoopImpl implements RunLoop {
       for await (const msg of this.queue) {
         if (this.stopped) break
 
-        try {
-          await this.processMessage(msg)
-        } catch (err) {
+        // Determine thread key so same-thread messages stay serial
+        const config = await loadAgentConfig(this.agentId, getDaemonConfig().theClawHome)
+        const threadId = determineThreadId(config, msg.source)
+
+        // Chain onto the per-thread lock (serial within thread, concurrent across threads)
+        const prev = this.threadLocks.get(threadId) ?? Promise.resolve()
+        const task = prev.then(() => this.processMessage(msg)).catch((err) => {
           const errorMsg = err instanceof Error ? err.message : String(err)
           this.logger.error(`Error processing message: ${errorMsg}`)
-          // Continue to next message
-        }
+        })
+        this.threadLocks.set(threadId, task)
+        this.inflight.add(task)
+        void task.then(() => { this.inflight.delete(task) })
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       this.logger.error(`Run-loop error: ${errorMsg}`)
     }
 
+    // Wait for all in-flight tasks to finish
+    await Promise.all(this.inflight)
     this.logger.info('Run-loop stopped')
   }
 
