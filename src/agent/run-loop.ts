@@ -13,8 +13,8 @@ import { Deliver } from './deliver.js'
 import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
 import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
-import { compactSession, estimateTotalTokens } from './memory.js'
-import { loadSessionMessages } from './session.js'
+import { compactSession } from './memory.js'
+import { estimateTokens } from './session.js'
 import { getDaemonConfig } from '../config.js'
 import { join } from 'path'
 
@@ -155,9 +155,13 @@ export class RunLoopImpl implements RunLoop {
         await deliver.streamCompactEnd(sessionId, compactResult.before_tokens ?? 0, compactResult.after_tokens ?? 0)
         await deliver.streamCtxUsage(sessionId, compactResult.after_tokens ?? 0, compactResult.budget_tokens ?? inputBudget)
       } else {
-        // Not compacted — still send ctx_usage for current state
-        const messages = await loadSessionMessages(sessionFile)
-        const totalTokens = estimateTotalTokens(chatInput.system ?? '', messages, msg.content)
+        // Not compacted — estimate ctx_usage from the actual LLM context (history + system + user)
+        let totalTokens = estimateTokens(chatInput.system ?? '')
+        for (const m of chatInput.history ?? []) {
+          const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+          totalTokens += estimateTokens(text) + 4
+        }
+        totalTokens += estimateTokens(msg.content) + 4
         await deliver.streamCtxUsage(sessionId, totalTokens, inputBudget)
       }
     } catch (err) {
