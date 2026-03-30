@@ -1,5 +1,5 @@
 {
-  "name": "xar",
+  "name": "@theclawlab/xar",
   "version": "2.0.0",
   "description": "xar - Agent Runtime Daemon for TheClaw v2",
   "type": "module",
@@ -12,7 +12,9 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "release:local": "npm run build && npm link"
+    "release:local": "npm run build && npm link",
+    "release:public": "npm test && npm run build && npm publish --access public",
+    "release:public:skip-test": "npm run build && npm publish --access public"
   },
   "keywords": [
     "agent",
