@@ -4,36 +4,27 @@
  * Bypasses daemon/IPC — talks to the agent directly via pai lib and thread lib.
  * Useful for local debugging and development.
  *
- * Each turn:
- *   1. Read user input from stdin
- *   2. Route to a fixed cli thread (threadId = "peer-cli")
- *   3. Push user message to thread
- *   4. Build context (identity + memory + thread history)
- *   5. Run session compact if needed
- *   6. Call pai.chat() with streaming — tokens to stdout, tool events to stderr
- *   7. Push assistant/tool records to thread
- *
- * Session persists across invocations. Ctrl+C or Ctrl+D to exit.
+ * Uses the shared `processTurn()` core so compact, ctx_usage, retry, and chat
+ * logic stay in sync with the daemon run-loop.
  */
 
 import { createInterface } from 'readline'
 import { join } from 'path'
 import { promises as fs } from 'fs'
+import { Writable } from 'node:stream'
 import { Command } from 'commander'
-import { chat, createBashExecTool, loadConfig, resolveProvider } from 'pai'
-import type { ChatConfig, Tool } from 'pai'
+import { loadConfig, resolveProvider } from 'pai'
+import type { ChatConfig } from 'pai'
 import { getDaemonConfig } from '../config.js'
 import { loadAgentConfig } from '../agent/config.js'
 import { loadIdentity } from '../agent/context.js'
 import { openOrCreateThread } from '../agent/thread-lib.js'
-import { compactSession } from '../agent/memory.js'
-import { estimateTokens, loadSessionMessages, loadCompactState } from '../agent/session.js'
+import { processTurn, estimateChatInputTokens, computeInputBudget } from '../agent/turn.js'
+import type { TurnCallbacks } from '../agent/turn.js'
 import { CliError } from '../types.js'
 
 const CLI_THREAD_ID = 'peer-cli'
 const CLI_SOURCE = 'peer:cli'
-const CONTEXT_WINDOW = 128_000
-const MAX_OUTPUT_TOKENS = 4096
 
 // ─── Progress rendering ───────────────────────────────────────────────────────
 
@@ -103,25 +94,6 @@ function renderToolResult(data: unknown): void {
   process.stderr.write(renderInlineOrBlock(prefix, content, INDENT))
 }
 
-// ─── Context usage display ────────────────────────────────────────────────────
-
-function printCtxUsage(
-  systemPrompt: string,
-  history: Array<{ role: string; content: string }>,
-  userMessage: string,
-): void {
-  const inputBudget = CONTEXT_WINDOW - MAX_OUTPUT_TOKENS - 512
-  let total = estimateTokens(systemPrompt)
-  for (const m of history) {
-    const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
-    total += estimateTokens(text) + 4
-  }
-  total += estimateTokens(userMessage) + 4
-  const pct = Math.round((total / inputBudget) * 100)
-  const toK = (n: number): string => `${Math.round(n / 1000)}K`
-  process.stderr.write(`\nctx: ${pct}% (${toK(total)}/${toK(inputBudget)})\n`)
-}
-
 // ─── Command ──────────────────────────────────────────────────────────────────
 
 export function createChatCommand(): Command {
@@ -156,12 +128,9 @@ export function createChatCommand(): Command {
           ...(provider.providerOptions !== undefined ? { providerOptions: provider.providerOptions } : {}),
         }
 
-        const tools: Tool[] = [createBashExecTool()]
         const sessionFile = join(agentDir, 'sessions', `${CLI_THREAD_ID}.jsonl`)
-        const sessionsDir = join(agentDir, 'sessions')
-        await fs.mkdir(sessionsDir, { recursive: true })
+        await fs.mkdir(join(agentDir, 'sessions'), { recursive: true })
 
-        // Open (or create) the cli thread
         const threadStore = await openOrCreateThread(id, CLI_THREAD_ID)
 
         process.stdout.write(`Chatting with agent '${id}' (Ctrl+C or Ctrl+D to exit)\n\n`)
@@ -200,42 +169,21 @@ export function createChatCommand(): Command {
             }
             const systemPrompt = memParts.join('\n\n')
 
-            // Compact session if needed
-            try {
-              await compactSession({
-                agentDir,
-                threadId: CLI_THREAD_ID,
-                sessionFile,
-                systemPrompt,
-                userMessage: text,
-                provider: agentConfig.pai.provider,
-                model: agentConfig.pai.model,
-                apiKey: provider.apiKey ?? '',
-                contextWindow: CONTEXT_WINDOW,
-                maxOutputTokens: MAX_OUTPUT_TOKENS,
-                logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, close: () => Promise.resolve() },
-              })
-            } catch { /* non-fatal */ }
-
             // Build history from thread events
             const events = await threadStore.peek({ lastEventId: 0, limit: 1000 })
-            // Exclude the message we just pushed (last event) — pai will add it as userMessage
             const historyEvents = events.slice(0, -1)
             type HistoryMessage = { role: 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string; tool_calls?: unknown[] }
             const history: HistoryMessage[] = []
             for (const ev of historyEvents) {
               if (ev.type === 'message' && ev.source !== 'self') {
-                // User message — stored as plain content
                 history.push({ role: 'user', content: ev.content })
               } else if (ev.type === 'record') {
-                // Assistant/tool records — stored as JSON-encoded full message
                 try {
                   const msg = JSON.parse(ev.content) as HistoryMessage
                   if (msg.role === 'assistant' || msg.role === 'tool') {
                     history.push(msg)
                   }
                 } catch {
-                  // Legacy plain-text record — best-effort
                   if (ev.source === 'self') {
                     history.push({ role: 'assistant', content: ev.content })
                   }
@@ -245,55 +193,57 @@ export function createChatCommand(): Command {
 
             const chatInput = { system: systemPrompt, history, userMessage: text }
 
-            // Stream response
-            process.stderr.write(`\n--- working...\n`)
+            // Streaming token writer → stdout
             let replyHeaderPrinted = false
             let replyText = ''
-            const newMessages: Array<{ role: string; content: string; name?: string }> = []
-
-            const controller = new AbortController()
-            const maxAttempts = agentConfig.retry.max_attempts
-
-            for (let attempt = 0; attempt < maxAttempts; attempt++) {
-              try {
-                // Stdout writer for streaming tokens
-                const stdoutWriter = {
-                  write(chunk: string | Buffer): boolean {
-                    const token = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-                    if (!replyHeaderPrinted) {
-                      process.stdout.write(`\nA:\n`)
-                      replyHeaderPrinted = true
-                    }
-                    process.stdout.write(token)
-                    replyText += token
-                    return true
-                  },
+            const stdoutWriter = new Writable({
+              write(chunk: Buffer, _encoding: string, callback: (error?: Error | null) => void): void {
+                const token = chunk.toString('utf8')
+                if (!replyHeaderPrinted) {
+                  process.stdout.write(`\nA:\n`)
+                  replyHeaderPrinted = true
                 }
+                process.stdout.write(token)
+                replyText += token
+                callback()
+              },
+            })
 
-                for await (const event of chat(chatInput, chatConfig, stdoutWriter as any, tools, controller.signal)) {
-                  if (event.type === 'tool_call') {
-                    renderToolCall({ name: event.name, arguments: event.args })
-                  } else if (event.type === 'tool_result') {
-                    renderToolResult(event.result)
-                  } else if (event.type === 'chat_end') {
-                    for (const m of event.newMessages) {
-                      newMessages.push(m as any)
-                    }
-                  }
-                }
-                break
-              } catch (err) {
-                const errMsg = err instanceof Error ? err.message : String(err)
-                const isRetryable = errMsg.toLowerCase().match(/timeout|rate limit|network|econnreset|econnrefused|503|429/)
-                if (!isRetryable || attempt === maxAttempts - 1) throw err
-                const delay = Math.pow(2, attempt) * 1000
-                process.stderr.write(`  retrying in ${delay}ms...\n`)
-                await new Promise(r => setTimeout(r, delay))
-              }
+            process.stderr.write(`\n--- working...\n`)
+
+            const toK = (n: number): string => `${Math.round(n / 1000)}K`
+
+            const callbacks: TurnCallbacks = {
+              onCompactStart(reason) { process.stderr.write(`compacting session (${reason})...\n`) },
+              onCompactEnd(before, after) { process.stderr.write(`compact done (${toK(before)} → ${toK(after)})\n`) },
+              onCtxUsage(total, budget, pct) { process.stderr.write(`\nctx: ${pct}% (${toK(total)}/${toK(budget)})\n`) },
+              onStreamStart() { /* noop — CLI prints "working..." above */ },
+              onStreamEnd() {
+                if (replyHeaderPrinted) { process.stdout.write('\n\n') }
+                else { process.stdout.write(`\nA:\n${replyText}\n\n`) }
+              },
+              onStreamError(error) { process.stderr.write(`\nError: ${error}\n\n`) },
+              onThinkingDelta() { /* ignore in CLI */ },
+              onToolCall(tc) { renderToolCall(tc) },
+              onToolResult(tr) { renderToolResult(tr) },
             }
 
-            // Write assistant/tool records to thread (store full message JSON to preserve tool_call_id etc.)
-            for (const m of newMessages) {
+            const result = await processTurn({
+              chatInput,
+              chatConfig,
+              tokenWriter: stdoutWriter,
+              sessionFile,
+              agentDir,
+              threadId: CLI_THREAD_ID,
+              contextWindow: provider.contextWindow,
+              maxOutputTokens: provider.maxTokens,
+              maxAttempts: agentConfig.retry.max_attempts,
+              logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, close: async () => {} },
+              callbacks,
+            })
+
+            // Write assistant/tool records to thread
+            for (const m of result.newMessages) {
               const source = m.role === 'assistant' ? 'self' : `tool:${(m as any).name ?? ''}`
               const subtype = m.role === 'tool' ? 'toolcall' : undefined
               await threadStore.push({
@@ -302,15 +252,6 @@ export function createChatCommand(): Command {
                 ...(subtype ? { subtype } : {}),
                 content: JSON.stringify(m),
               })
-            }
-
-            process.stderr.write('\n')
-            printCtxUsage(systemPrompt, history, text)
-
-            if (replyHeaderPrinted) {
-              process.stdout.write('\n\n')
-            } else {
-              process.stdout.write(`\nA:\n${replyText}\n\n`)
             }
           } catch (err) {
             process.stderr.write(`\nError: ${err instanceof Error ? err.message : String(err)}\n\n`)
