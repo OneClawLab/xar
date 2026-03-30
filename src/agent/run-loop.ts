@@ -99,13 +99,14 @@ export class RunLoopImpl implements RunLoop {
     // try to notify the client so they don't hang forever.
     let deliver: Deliver | null = null
     let sessionId = ''
+    let threadStore: Awaited<ReturnType<typeof routeMessage>> | null = null
 
     try {
       const theClawHome = getDaemonConfig().theClawHome
       const config = await loadAgentConfig(this.agentId, theClawHome)
 
       // Route message to appropriate thread
-      const threadStore = await routeMessage(this.agentId, config, msg)
+      threadStore = await routeMessage(this.agentId, config, msg)
       const threadId = determineThreadId(config, msg.source)
       this.logger.info(`Message routed: thread=${threadId}`)
 
@@ -195,6 +196,20 @@ export class RunLoopImpl implements RunLoop {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       this.logger.error(`Message processing failed: ${errorMsg}`)
+
+      // Persist error record to thread (if thread was opened)
+      if (threadStore) {
+        try {
+          await threadStore.push({
+            source: 'system',
+            type: 'record',
+            subtype: 'error',
+            content: errorMsg,
+          })
+        } catch {
+          this.logger.error('Failed to write error record to thread')
+        }
+      }
 
       // Try to notify the client — deliver may not exist yet if the error
       // happened before IPC setup, so fall back to a raw conn.send().
