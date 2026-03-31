@@ -1,6 +1,5 @@
 /**
  * Property-based tests for Router determinism
- * Validates: Requirements 6.1
  */
 
 import { describe, it } from 'vitest'
@@ -19,7 +18,7 @@ describe('Router Determinism Property Tests', () => {
     routing: fc.record({
       default: fc.oneof(
         fc.constant('per-peer'),
-        fc.constant('per-session'),
+        fc.constant('per-conversation'),
         fc.constant('per-agent'),
       ),
     }),
@@ -32,24 +31,21 @@ describe('Router Determinism Property Tests', () => {
     }),
   })
 
-  // Generate non-empty IDs that don't contain colons
-  const idArb = fc.string({ minLength: 1 }).filter((s) => s.trim().length > 0 && !s.includes(':'))
+  // Generate safe IDs: non-empty, no colons, no slashes, no whitespace
+  const idArb = fc.stringMatching(/^[a-z0-9][a-z0-9-]{0,19}$/)
 
-  it('Property 2: Router Determinism - For any agent configuration and source, the Router SHALL always produce the same target thread ID when given identical inputs', () => {
+  /**
+   * Build a valid source address for the given routing mode and id.
+   */
+  function buildSource(routing: string, id: string): string {
+    // All modes use external source format
+    return `external:tui:default:dm:${id}:${id}`
+  }
+
+  it('Property: Router Determinism - same inputs always produce same thread ID', () => {
     fc.assert(
       fc.property(configArb, idArb, (config, id) => {
-        // Generate source based on routing mode to ensure valid combinations
-        const routing = (config as AgentConfig).routing.default
-        let source: string
-
-        if (routing === 'per-session') {
-          source = `session:${id}`
-        } else if (routing === 'per-peer') {
-          source = `peer:${id}`
-        } else {
-          source = `agent:${id}`
-        }
-
+        const source = buildSource((config as AgentConfig).routing.default, id)
         const threadId1 = determineThreadId(config as AgentConfig, source)
         const threadId2 = determineThreadId(config as AgentConfig, source)
         return threadId1 === threadId2
@@ -58,29 +54,23 @@ describe('Router Determinism Property Tests', () => {
     )
   })
 
-  it('Property 2: Router produces different thread IDs for different peer IDs in per-peer mode', () => {
+  it('Property: Different peer IDs produce different thread IDs in per-peer mode', () => {
     fc.assert(
-      fc.property(
-        fc.string({ minLength: 1 }),
-        idArb,
-        idArb,
-        (agentId, peerId1, peerId2) => {
-          const config: AgentConfig = {
-            agent_id: agentId,
-            kind: 'user',
-            pai: { provider: 'openai', model: 'gpt-4o' },
-            routing: { default: 'per-peer' },
-            memory: { compact_threshold_tokens: 8000, session_compact_threshold_tokens: 4000 },
-            retry: { max_attempts: 3 },
-          }
+      fc.property(idArb, idArb, (peerId1, peerId2) => {
+        const config: AgentConfig = {
+          agent_id: 'test',
+          kind: 'user',
+          pai: { provider: 'openai', model: 'gpt-4o' },
+          routing: { default: 'per-peer' },
+          memory: { compact_threshold_tokens: 8000, session_compact_threshold_tokens: 4000 },
+          retry: { max_attempts: 3 },
+        }
 
-          const threadId1 = determineThreadId(config, `peer:${peerId1}`)
-          const threadId2 = determineThreadId(config, `peer:${peerId2}`)
+        const t1 = determineThreadId(config, `external:tui:default:dm:${peerId1}:${peerId1}`)
+        const t2 = determineThreadId(config, `external:tui:default:dm:${peerId2}:${peerId2}`)
 
-          // If peer IDs are different, thread IDs should be different
-          return peerId1 === peerId2 ? threadId1 === threadId2 : threadId1 !== threadId2
-        },
-      ),
+        return peerId1 === peerId2 ? t1 === t2 : t1 !== t2
+      }),
       { numRuns: 100 },
     )
   })

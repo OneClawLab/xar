@@ -1,73 +1,77 @@
 /**
- * Delivery system - sends streaming tokens and responses back to xgw via IPC
+ * Delivery system - sends streaming events back to xgw via IPC.
+ *
+ * Uses OutboundTarget (only in stream_start) + stream_id (all events) per ARCH.md.
  */
 
-import type { ReplyContext } from '../types.js'
+import type { OutboundTarget } from '../types.js'
 import type { IpcConnection } from '../ipc/types.js'
 
 export class Deliver {
-  constructor(private conn: IpcConnection, private replyContext: ReplyContext) {}
+  constructor(
+    private conn: IpcConnection,
+    private target: OutboundTarget,
+  ) {}
 
-  async streamStart(sessionId: string): Promise<void> {
+  async streamStart(streamId: string): Promise<void> {
     await this.conn.send({
       type: 'stream_start',
-      reply_context: this.replyContext,
-      session_id: sessionId,
+      target: this.target,
+      stream_id: streamId,
     })
   }
 
-  async streamToken(sessionId: string, token: string): Promise<void> {
+  async streamToken(streamId: string, token: string): Promise<void> {
     await this.conn.send({
       type: 'stream_token',
-      session_id: sessionId,
+      stream_id: streamId,
       token,
     })
   }
 
-  async streamThinking(sessionId: string, delta: string): Promise<void> {
+  async streamThinking(streamId: string, delta: string): Promise<void> {
     await this.conn.send({
       type: 'stream_thinking',
-      session_id: sessionId,
+      stream_id: streamId,
       delta,
     })
   }
 
-  async streamToolCall(sessionId: string, toolCall: unknown): Promise<void> {
+  async streamToolCall(streamId: string, toolCall: unknown): Promise<void> {
     await this.conn.send({
       type: 'stream_tool_call',
-      session_id: sessionId,
+      stream_id: streamId,
       tool_call: toolCall,
     })
   }
 
-  async streamToolResult(sessionId: string, toolResult: unknown): Promise<void> {
+  async streamToolResult(streamId: string, toolResult: unknown): Promise<void> {
     await this.conn.send({
       type: 'stream_tool_result',
-      session_id: sessionId,
+      stream_id: streamId,
       tool_result: toolResult,
     })
   }
 
-  async streamEnd(sessionId: string): Promise<void> {
+  async streamEnd(streamId: string): Promise<void> {
     await this.conn.send({
       type: 'stream_end',
-      session_id: sessionId,
+      stream_id: streamId,
     })
   }
 
-  async streamError(sessionId: string, error: string): Promise<void> {
+  async streamError(streamId: string, error: string): Promise<void> {
     await this.conn.send({
       type: 'stream_error',
-      session_id: sessionId,
+      stream_id: streamId,
       error,
     })
   }
 
-  async streamCtxUsage(sessionId: string, totalTokens: number, budgetTokens: number): Promise<void> {
+  async streamCtxUsage(streamId: string, totalTokens: number, budgetTokens: number): Promise<void> {
     await this.conn.send({
       type: 'stream_ctx_usage',
-      reply_context: this.replyContext,
-      session_id: sessionId,
+      stream_id: streamId,
       ctx_usage: {
         total_tokens: totalTokens,
         budget_tokens: budgetTokens,
@@ -76,20 +80,18 @@ export class Deliver {
     })
   }
 
-  async streamCompactStart(sessionId: string, reason: 'threshold' | 'interval'): Promise<void> {
+  async streamCompactStart(streamId: string, reason: 'threshold' | 'interval'): Promise<void> {
     await this.conn.send({
       type: 'stream_compact_start',
-      reply_context: this.replyContext,
-      session_id: sessionId,
+      stream_id: streamId,
       compact_start: { reason },
     })
   }
 
-  async streamCompactEnd(sessionId: string, beforeTokens: number, afterTokens: number): Promise<void> {
+  async streamCompactEnd(streamId: string, beforeTokens: number, afterTokens: number): Promise<void> {
     await this.conn.send({
       type: 'stream_compact_end',
-      reply_context: this.replyContext,
-      session_id: sessionId,
+      stream_id: streamId,
       compact_end: { before_tokens: beforeTokens, after_tokens: afterTokens },
     })
   }

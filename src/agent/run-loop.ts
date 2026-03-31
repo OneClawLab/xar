@@ -1,13 +1,18 @@
 /**
- * Run-loop - Per-agent message processing loop
+ * Run-loop - Per-agent message processing loop.
+ *
+ * Concurrency model (per ARCH.md):
+ *   - Different agents: concurrent
+ *   - Different threads of same agent: concurrent
+ *   - Same thread: serial (via per-thread promise chain)
  */
 
 import { loadConfig, resolveProvider } from 'pai'
 import type { ChatConfig } from 'pai'
-import type { InboundMessage } from '../types.js'
+import type { InboundMessage, OutboundTarget } from '../types.js'
 import type { AsyncQueue } from './queue.js'
 import { loadAgentConfig } from './config.js'
-import { routeMessage, determineThreadId } from './router.js'
+import { routeMessage, determineThreadId, parseSource } from './router.js'
 import { buildContext } from './context.js'
 import { Deliver } from './deliver.js'
 import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
@@ -29,6 +34,8 @@ export class RunLoopImpl implements RunLoop {
   private threadLocks = new Map<string, Promise<void>>()
   /** Track in-flight tasks so stop() can wait for them */
   private inflight = new Set<Promise<void>>()
+  /** Per-agent monotonic counter for stream_id uniqueness */
+  private streamSeq = 0
 
   constructor(
     private agentId: string,
@@ -92,13 +99,38 @@ export class RunLoopImpl implements RunLoop {
     return Array.from(this.ipcConnections.values())[0]
   }
 
-  private async processMessage(msg: InboundMessage): Promise<void> {
-    this.logger.info(`Processing message: source=${msg.source} channel=${msg.reply_context.channel_id} peer=${msg.reply_context.peer_id}`)
+  /**
+   * Build OutboundTarget from source address.
+   * For external sources, extract channel_id, peer_id, conversation_id.
+   * For internal sources, there's no outbound target (agent-to-agent doesn't go through xgw).
+   */
+  private buildTarget(source: string): OutboundTarget | null {
+    const parsed = parseSource(source)
+    if (parsed.kind === 'external' && parsed.channel_id && parsed.peer_id && parsed.conversation_id) {
+      return {
+        channel_id: parsed.channel_id,
+        peer_id: parsed.peer_id,
+        conversation_id: parsed.conversation_id,
+      }
+    }
+    return null
+  }
 
-    // Best-effort error reporter: if anything fails before processTurn,
-    // try to notify the client so they don't hang forever.
+  /**
+   * Generate a unique stream_id: <channel_id>:<conversation_id>:<seq>
+   */
+  private nextStreamId(target: OutboundTarget): string {
+    this.streamSeq++
+    return `${target.channel_id}:${target.conversation_id}:${this.streamSeq}`
+  }
+
+  private async processMessage(msg: InboundMessage): Promise<void> {
+    const target = this.buildTarget(msg.source)
+    this.logger.info(`Processing message: source=${msg.source}`)
+
+    // Best-effort error reporter
     let deliver: Deliver | null = null
-    let sessionId = ''
+    let streamId = ''
     let threadStore: Awaited<ReturnType<typeof routeMessage>> | null = null
 
     try {
@@ -148,9 +180,16 @@ export class RunLoopImpl implements RunLoop {
       }
       this.logger.debug(`Using IPC connection: ${conn.id}`)
 
-      const chunkWriter = new IpcChunkWriter(conn, msg.reply_context)
-      deliver = new Deliver(conn, msg.reply_context)
-      sessionId = `${msg.reply_context.channel_id}:${msg.reply_context.session_id}`
+      // Build stream_id and delivery objects
+      if (target) {
+        streamId = this.nextStreamId(target)
+        deliver = new Deliver(conn, target)
+      } else {
+        // Internal message — generate a placeholder stream_id for logging
+        streamId = `internal:${this.agentId}:${this.streamSeq++}`
+      }
+
+      const chunkWriter = new IpcChunkWriter(conn, streamId)
 
       const result = await processTurn({
         chatInput,
@@ -164,15 +203,15 @@ export class RunLoopImpl implements RunLoop {
         maxAttempts: config.retry.max_attempts,
         logger: this.logger,
         callbacks: {
-          onCompactStart: (reason) => deliver!.streamCompactStart(sessionId, reason),
-          onCompactEnd: (before, after) => deliver!.streamCompactEnd(sessionId, before, after),
-          onCtxUsage: (total, budget, _pct) => deliver!.streamCtxUsage(sessionId, total, budget),
-          onStreamStart: () => deliver!.streamStart(sessionId),
-          onStreamEnd: () => deliver!.streamEnd(sessionId),
-          onStreamError: (error) => deliver!.streamError(sessionId, error),
-          onThinkingDelta: (delta) => deliver!.streamThinking(sessionId, delta),
-          onToolCall: (tc) => deliver!.streamToolCall(sessionId, tc),
-          onToolResult: (tr) => deliver!.streamToolResult(sessionId, tr),
+          onCompactStart: (reason) => deliver?.streamCompactStart(streamId, reason),
+          onCompactEnd: (before, after) => deliver?.streamCompactEnd(streamId, before, after),
+          onCtxUsage: (total, budget, _pct) => deliver?.streamCtxUsage(streamId, total, budget),
+          onStreamStart: () => deliver?.streamStart(streamId),
+          onStreamEnd: () => deliver?.streamEnd(streamId),
+          onStreamError: (error) => deliver?.streamError(streamId, error),
+          onThinkingDelta: (delta) => deliver?.streamThinking(streamId, delta),
+          onToolCall: (tc) => deliver?.streamToolCall(streamId, tc),
+          onToolResult: (tr) => deliver?.streamToolResult(streamId, tr),
         },
       })
 
@@ -192,7 +231,7 @@ export class RunLoopImpl implements RunLoop {
         }
       })
       await threadStore.pushBatch(threadEvents)
-      this.logger.info(`Message processed successfully: session=${sessionId} records=${threadEvents.length}`)
+      this.logger.info(`Message processed successfully: stream=${streamId} records=${threadEvents.length}`)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       this.logger.error(`Message processing failed: ${errorMsg}`)
@@ -201,7 +240,7 @@ export class RunLoopImpl implements RunLoop {
       if (threadStore) {
         try {
           await threadStore.push({
-            source: 'system',
+            source: 'self',
             type: 'record',
             subtype: 'error',
             content: errorMsg,
@@ -211,17 +250,16 @@ export class RunLoopImpl implements RunLoop {
         }
       }
 
-      // Try to notify the client — deliver may not exist yet if the error
-      // happened before IPC setup, so fall back to a raw conn.send().
+      // Try to notify the client
       try {
         if (deliver) {
-          await deliver.streamError(sessionId, errorMsg)
-        } else {
+          await deliver.streamError(streamId, errorMsg)
+        } else if (target) {
           const conn = this.getConn()
           if (conn) {
             await conn.send({
               type: 'stream_error',
-              session_id: `${msg.reply_context.channel_id}:${msg.reply_context.session_id}`,
+              stream_id: streamId || `error:${this.agentId}:${Date.now()}`,
               error: errorMsg,
             })
           }

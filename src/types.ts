@@ -2,19 +2,23 @@
  * IPC Message Types and Interfaces
  */
 
+/**
+ * Inbound message from xgw → xar.
+ * Only source + content; outbound routing info is derived from source at reply time.
+ */
 export interface InboundMessage {
   source: string
   content: string
-  reply_context: ReplyContext
 }
 
-export interface ReplyContext {
-  channel_type: string
+/**
+ * Outbound target address for stream_start events.
+ * xgw uses channel_id to find the plugin, peer_id + conversation_id for delivery.
+ */
+export interface OutboundTarget {
   channel_id: string
-  session_type: string
-  session_id: string
   peer_id: string
-  ipc_conn_id?: string
+  conversation_id: string
 }
 
 export type IpcMessageType =
@@ -55,8 +59,10 @@ export interface IpcMessage {
   type: IpcMessageType
   agent_id?: string
   message?: InboundMessage
-  reply_context?: ReplyContext
-  session_id?: string
+  /** stream_id correlates all events within a single streaming session */
+  stream_id?: string
+  /** OutboundTarget — only present in stream_start */
+  target?: OutboundTarget
   token?: string
   delta?: string
   /** tool_call event payload (JSON-encoded) */

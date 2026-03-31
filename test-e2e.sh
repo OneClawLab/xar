@@ -73,7 +73,6 @@ assert_exit0
 assert_file_exists "$AGENT_DIR/config.json" "config.json"
 assert_file_exists "$AGENT_DIR/IDENTITY.md" "IDENTITY.md"
 assert_file_exists "$AGENT_DIR/USAGE.md" "USAGE.md"
-assert_file_exists "$AGENT_DIR/inbox/events.db" "inbox thread"
 
 # ══════════════════════════════════════════════════════════════
 # 5. init — duplicate exits 1

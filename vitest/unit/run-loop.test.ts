@@ -17,15 +17,8 @@ function makeConn(): IpcConnection {
 
 function makeMsg(content = 'hello'): InboundMessage {
   return {
-    source: 'peer:user1',
+    source: 'external:cli:default:dm:user1:user1',
     content,
-    reply_context: {
-      channel_type: 'internal',
-      channel_id: 'ch1',
-      session_type: 'dm',
-      session_id: 'sess1',
-      peer_id: 'user1',
-    },
   }
 }
 

@@ -20,7 +20,7 @@ describe('Configuration Validation Property Tests', () => {
     routing: fc.record({
       default: fc.oneof(
         fc.constant('per-peer'),
-        fc.constant('per-session'),
+        fc.constant('per-conversation'),
         fc.constant('per-agent'),
       ),
     }),

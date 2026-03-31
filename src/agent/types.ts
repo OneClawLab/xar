@@ -10,7 +10,7 @@ export interface AgentConfig {
     model: string
   }
   routing: {
-    default: 'per-peer' | 'per-session' | 'per-agent'
+    default: 'per-peer' | 'per-conversation' | 'per-agent'
   }
   memory: {
     compact_threshold_tokens: number

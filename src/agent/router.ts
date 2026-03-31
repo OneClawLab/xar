@@ -1,5 +1,12 @@
 /**
- * Message router - routes inbox messages to target threads based on routing config
+ * Message router - routes inbound messages to target threads based on agent routing config.
+ *
+ * Source address format (from ARCH.md):
+ *   external:<channel_id>:<conversation_type>:<conversation_id>:<peer_id>
+ *   internal:<conversation_type>:<conversation_id>:<sender_agent_id>
+ *   self
+ *
+ * channel_id itself is structured as <channel_type>:<instance> (e.g. "telegram:main").
  */
 
 import type { ThreadStore } from 'thread'
@@ -7,39 +14,75 @@ import type { InboundMessage } from '../types.js'
 import type { AgentConfig } from './types.js'
 import { openOrCreateThread } from './thread-lib.js'
 
-/**
- * Parse thread source address format: <type>:<id>
- * Examples:
- *   - peer:user123
- *   - session:sess456
- *   - agent:admin
- */
-function parseSource(source: string): { type: string; id: string } {
-  const [type, id] = source.split(':')
-  if (!type || !id) {
-    throw new Error(`Invalid source format: ${source}`)
-  }
-  return { type, id }
+export interface ParsedSource {
+  kind: 'external' | 'internal' | 'self'
+  channel_id?: string          // e.g. "telegram:main"
+  conversation_type?: string   // "dm" | "group" | "channel"
+  conversation_id?: string
+  peer_id?: string
+  sender_agent_id?: string
 }
 
 /**
- * Determine target thread ID based on routing config and message source
+ * Parse the structured source address string.
+ */
+export function parseSource(source: string): ParsedSource {
+  if (source === 'self') {
+    return { kind: 'self' }
+  }
+
+  const parts = source.split(':')
+
+  if (parts[0] === 'external' && parts.length >= 6) {
+    // external:<ch_type>:<ch_instance>:<conv_type>:<conv_id>:<peer_id>
+    const channelId = `${parts[1]}:${parts[2]}`
+    const conversationType = parts[3]!
+    const conversationId = parts[4]!
+    const peerId = parts[5]!
+    return {
+      kind: 'external',
+      channel_id: channelId,
+      conversation_type: conversationType,
+      conversation_id: conversationId,
+      peer_id: peerId,
+    }
+  }
+
+  if (parts[0] === 'internal' && parts.length >= 4) {
+    // internal:<conv_type>:<conv_id>:<sender_agent_id>
+    const conversationType = parts[1]!
+    const conversationId = parts[2]!
+    const senderAgentId = parts[3]!
+    return {
+      kind: 'internal',
+      conversation_type: conversationType,
+      conversation_id: conversationId,
+      sender_agent_id: senderAgentId,
+    }
+  }
+
+  throw new Error(`Invalid source format: ${source}`)
+}
+
+/**
+ * Determine target thread ID based on routing config and parsed source.
  */
 export function determineThreadId(config: AgentConfig, source: string): string {
-  const { type, id } = parseSource(source)
+  const parsed = parseSource(source)
   const routing = config.routing.default
 
   switch (routing) {
-    case 'per-peer':
-      // One thread per peer, regardless of session
-      return `peer-${id}`
+    case 'per-peer': {
+      // One thread per peer
+      const peerId = parsed.peer_id ?? parsed.sender_agent_id ?? 'unknown'
+      return `peers/${peerId}`
+    }
 
-    case 'per-session':
-      // One thread per session
-      if (type !== 'session') {
-        throw new Error(`per-session routing requires session source, got ${type}`)
-      }
-      return `session-${id}`
+    case 'per-conversation': {
+      // One thread per conversation
+      const convId = parsed.conversation_id ?? 'unknown'
+      return `conversations/${convId}`
+    }
 
     case 'per-agent':
       // Single thread for entire agent
@@ -51,8 +94,8 @@ export function determineThreadId(config: AgentConfig, source: string): string {
 }
 
 /**
- * Route an inbound message to the appropriate thread
- * Returns the ThreadStore for that thread
+ * Route an inbound message to the appropriate thread.
+ * Returns the ThreadStore for that thread.
  */
 export async function routeMessage(
   agentId: string,

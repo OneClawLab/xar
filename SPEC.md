@@ -4,7 +4,7 @@ xar 是 TheClaw v2 架构的核心 runtime daemon，负责 agent 生命周期管
 
 模块类型：**CLI/Daemon**（见 [CLI-LIB-Module-Spec.md](../TheClaw/CLI-LIB-Module-Spec.md)）
 
-参考文档：[TheClaw SPECv2.md](../TheClaw/SPECv2.md)（旧 `agent` repo 作为设计参考，不做重构）
+架构文档：[ARCH.md](../TheClaw/ARCH.md)
 
 ---
 
@@ -13,7 +13,7 @@ xar 是 TheClaw v2 架构的核心 runtime daemon，负责 agent 生命周期管
 1. **xar 是纯 CLI/Daemon 模块**：没有 lib 入口，不被其他模块 import。外部通过 IPC 和 CLI 与它交互。
 2. **依赖 lib，不内嵌逻辑**：thread 和 pai 作为 npm dependencies import，不复制代码。
 3. **Agent 即目录**：每个 agent 的全部数据存放在 `~/.theclaw/agents/<id>/`，文件系统是 ground truth。
-4. **不同 agent 并发，同一 agent 串行**：通过 per-agent 内存消息队列实现，天然安全。
+4. **并发粒度为 thread**：不同 agent 并发，同一 agent 的不同 thread 并发，同一 thread 内串行（通过 per-thread promise chain 保证）。
 5. **Streaming 优先**：LLM token 通过 IPC 实时 push 到 xgw，没有批处理边界。
 
 ---
@@ -44,7 +44,7 @@ xar/
 │   │   ├── deliver.ts            # 出站投递（通过 IPC → xgw）
 │   │   ├── memory.ts             # Session compact（对齐 agent repo compactor 逻辑）
 │   │   ├── queue.ts              # AsyncQueue<Message>（per-agent 内存消息队列）
-│   │   ├── router.ts             # inbox 消息 → 目标 thread 路由
+│   │   ├── router.ts             # 入站消息 → 目标 thread 分配
 │   │   ├── run-loop.ts           # 消息处理循环（per-agent async，持续运行）
 │   │   ├── session.ts            # Session JSONL 读写、token 估算、compact state
 │   │   ├── thread-lib.ts         # thread lib 封装（open/init/exists）
@@ -81,7 +81,6 @@ xar/
         ├── IDENTITY.md           # Agent system prompt（角色、能力、行为准则）
         ├── USAGE.md              # 对外使用说明（给人类和其他 agent）
         ├── config.json           # Agent 配置（见 Agent 配置格式）
-        ├── inbox/                # Inbox thread 目录（thread lib 管理）
         ├── sessions/             # pai chat session 文件（JSONL，per-thread）
         │   ├── <thread_id>.jsonl
         │   └── compact-state-<thread_id>.json  # compact 进度状态
@@ -91,7 +90,7 @@ xar/
         │   └── thread-<thread_id>.md  # per-thread 压缩摘要
         ├── threads/              # Agent 私有 thread 目录
         │   ├── peers/            # per-peer threads（routing=per-peer 时）
-        │   ├── sessions/         # per-session threads（routing=per-session 时）
+        │   ├── conversations/    # per-conversation threads（routing=per-conversation 时）
         │   └── main/             # per-agent 单一 thread（routing=per-agent 时）
         ├── workdir/              # 临时工作区
         └── logs/
@@ -131,7 +130,7 @@ xar/
 | `kind` | `"system"` \| `"user"` | Agent 类型 |
 | `pai.provider` | string | pai provider 名称 |
 | `pai.model` | string | 使用的模型 |
-| `routing.default` | `"per-peer"` \| `"per-session"` \| `"per-agent"` | 消息路由模式 |
+| `routing.default` | `"per-peer"` \| `"per-conversation"` \| `"per-agent"` | 消息路由模式 |
 | `memory.compact_threshold_tokens` | number | 触发跨 session memory 压缩的 token 阈值 |
 | `memory.session_compact_threshold_tokens` | number | 触发 session 内压缩的 token 阈值 |
 | `retry.max_attempts` | number | LLM 调用失败最大重试次数 |
@@ -173,10 +172,9 @@ xar list                             # 列出所有 agent（支持 --json）
 ```
 
 **`xar init <id>` 行为**：
-1. 创建 `~/.theclaw/agents/<id>/` 目录结构（含 `threads/peers/`、`threads/sessions/`、`threads/main/`）。
+1. 创建 `~/.theclaw/agents/<id>/` 目录结构（含 `threads/peers/`、`threads/conversations/`、`threads/main/`）。
 2. 生成默认 `IDENTITY.md`、`USAGE.md`、`config.json`。
-3. 通过 `ThreadLib.init()` 初始化 inbox thread（`~/.theclaw/agents/<id>/inbox/`）——语义上要求"必须是新建"，已存在则报错。
-4. 若 agent 已存在，报错退出（退出码 1）。
+3. 若 agent 已存在，报错退出（退出码 1）。
 
 **`xar start <id>` 行为**：
 1. 若 daemon 未运行，报错退出（退出码 1，提示先运行 `xar daemon start`）。
@@ -217,30 +215,35 @@ xar list                             # 列出所有 agent（支持 --json）
 { type: 'inbound_message', agent_id: string, message: InboundMessage }
 
 interface InboundMessage {
-  source: string          // thread source 地址格式（见 thread SPEC 4.3）
+  source: string          // 结构化来源地址（见 thread SPEC 4.3）
   content: string         // 消息内容
-  reply_context: ReplyContext  // 出站路由信息，透传到回复事件
-}
-
-interface ReplyContext {
-  channel_type: string    // 'telegram' | 'slack' | 'tui' | ...
-  channel_id: string
-  session_type: string    // 'dm' | 'group' | 'channel'
-  session_id: string
-  peer_id: string
-  ipc_conn_id?: string    // xgw 连接 ID（用于 streaming 回写）
 }
 ```
 
 **出站 streaming（xar → xgw）**：
 
 ```typescript
-{ type: 'stream_start',    reply_context: ReplyContext, session_id: string }
-{ type: 'stream_token',    session_id: string, token: string }
-{ type: 'stream_thinking', session_id: string, delta: string }  // thinking 模型推理过程
-{ type: 'stream_end',      session_id: string }
-{ type: 'stream_error',    session_id: string, error: string }
+// stream_start 携带 OutboundTarget（唯一携带 target 的事件）
+{ type: 'stream_start',    target: OutboundTarget, stream_id: string }
+// 后续事件通过 stream_id 关联
+{ type: 'stream_token',    stream_id: string, token: string }
+{ type: 'stream_thinking', stream_id: string, delta: string }
+{ type: 'stream_tool_call',    stream_id: string, tool_call: unknown }
+{ type: 'stream_tool_result',  stream_id: string, tool_result: unknown }
+{ type: 'stream_ctx_usage',    stream_id: string, ctx_usage: CtxUsage }
+{ type: 'stream_compact_start', stream_id: string, compact_start: CompactStartInfo }
+{ type: 'stream_compact_end',   stream_id: string, compact_end: CompactEndInfo }
+{ type: 'stream_end',      stream_id: string }
+{ type: 'stream_error',    stream_id: string, error: string }
+
+interface OutboundTarget {
+  channel_id: string      // 格式: <channel_type>:<instance>，如 "telegram:main"
+  peer_id: string
+  conversation_id: string
+}
 ```
+
+> `stream_id` 由 xar 生成，格式为 `<channel_id>:<conversation_id>:<seq>`，seq 为 per-agent 单调递增计数器。
 
 **管理操作（CLI → xar）**：
 
@@ -264,16 +267,14 @@ interface ReplyContext {
 
 ### 1. 消息队列模型
 
-每个 agent 拥有独立的内存消息队列（`AsyncQueue<InboundMessage>`）。IPC server 收到入站消息后按 `agent_id` push 到对应队列，run-loop 通过 `for await` 持续消费。
+每个 agent 拥有独立的内存消息队列（`AsyncQueue<InboundMessage>`）用于接收 IPC 入站消息。run-loop 从队列消费消息后，立即进行 Thread 分配并持久化到目标 thread。并发粒度为 thread：同一 thread 内的消息通过 per-thread promise chain 串行处理，不同 thread 间并发。
 
 ```
 IPC server
-  → 按 agent_id 分发
-  → agent-admin 队列: [msg1, msg2, ...]
-  → agent-warden 队列: [msg3, ...]
-
-run-loop(admin)  ←── for await ──── agent-admin 队列
-run-loop(warden) ←── for await ──── agent-warden 队列
+  → 按 agent_id 分发到 per-agent 队列
+  → run-loop 消费 → Thread 分配 → 写入目标 thread
+  → per-thread promise chain 保证同一 thread 串行
+  → 不同 thread 并发处理
 ```
 
 `AsyncQueue` 实现：基于 `Promise` 链的异步队列，`push()` 写入，`[Symbol.asyncIterator]` 消费，`close()` 终止迭代。
@@ -296,23 +297,28 @@ async function runLoop(agentId: string, queue: AsyncQueue<InboundMessage>) {
 }
 
 async function processMessage(agentId: string, msg: InboundMessage) {
-  const threadStore = await router.route(agentId, msg)     // 路由到目标 thread（ThreadStore）
+  const config = await loadAgentConfig(agentId)
+  const threadId = determineThreadId(config, msg.source)
+  const threadStore = await openOrCreateThread(agentId, threadId)
 
-  // InboundMessage → ThreadEventInput（入站消息写入 thread）
   await threadStore.push({
     source: msg.source,
     type: 'message',
-    content: JSON.stringify({ content: msg.content, reply_context: msg.reply_context }),
+    content: msg.content,
   })
 
-  const ctx = await contextBuilder.build(agentId, threadStore, msg) // 组装 LLM context
-  const ipcWriter = new IpcChunkWriter(conn, msg.reply_context)
-  await deliver.streamStart(msg.reply_context)
+  const target = buildOutboundTarget(msg.source)  // 从 source 解析出 channel_id, peer_id, conversation_id
+  const streamId = nextStreamId(target)            // <channel_id>:<conversation_id>:<seq>
+  const ctx = await buildContext(agentId, config, threadStore, msg, threadId)
+  const chunkWriter = new IpcChunkWriter(conn, streamId)
+  const deliver = new Deliver(conn, target)
 
-  for await (const event of pai.chat(ctx.input, ctx.config, ipcWriter, tools, signal)) {
+  await deliver.streamStart(streamId)
+
+  for await (const event of pai.chat(ctx.input, ctx.config, chunkWriter, tools, signal)) {
     if (event.type === 'thinking_delta') {
       // thinking 内容桥接到 xgw（xgw 可选择展示或忽略）
-      await deliver.streamThinking(msg.reply_context, event.delta)
+      await deliver.streamThinking(streamId, event.delta)
     }
     if (event.type === 'chat_end') {
       // pai Message[] → ThreadEventInput[]（回复写入 thread）
@@ -325,7 +331,7 @@ async function processMessage(agentId: string, msg: InboundMessage) {
       await memory.scheduleUpdate(agentId, threadStore, event)  // 异步触发 memory 更新
     }
   }
-  await deliver.streamEnd(msg.reply_context)
+  await deliver.streamEnd(streamId)
 }
 ```
 
@@ -353,10 +359,10 @@ compact 失败不影响主流程（non-fatal，记录 warn 日志）。
 xar 通过 IPC 直接 push streaming token 给 xgw，不经过 `xgw send` CLI：
 
 ```
-run-loop → IpcChunkWriter.write(token) → IPC → xgw → channel → peer
+run-loop → IpcChunkWriter.write(token) → IPC stream_token(stream_id, token) → xgw → channel → peer
 ```
 
-`IpcChunkWriter` 实现 `node:stream.Writable` 接口，`write()` 方法将 token 封装为 `stream_token` IPC 消息发送。
+`IpcChunkWriter` 构造时接收 `stream_id`，`write()` 方法将 token 封装为 `stream_token` IPC 消息发送。
 
 ---
 

@@ -20,15 +20,9 @@ export function createSendCommand(): Command {
     .description('Send a message to an agent (for testing/debugging)')
     .argument('<id>', 'Agent ID')
     .argument('<message>', 'Message content')
-    .option('--source <source>', 'Source address', 'peer:cli')
-    .option('--channel <channel>', 'Channel ID for reply_context', 'cli')
-    .option('--peer <peer>', 'Peer ID for reply_context', 'cli')
-    .option('--session <session>', 'Session ID for reply_context', 'cli')
+    .option('--source <source>', 'Source address', 'external:cli:default:dm:cli:cli')
     .action(async (id: string, message: string, opts: {
       source: string
-      channel: string
-      peer: string
-      session: string
     }) => {
       try {
         const config = getDaemonConfig()
@@ -45,13 +39,6 @@ export function createSendCommand(): Command {
             message: {
               source: opts.source,
               content: message,
-              reply_context: {
-                channel_type: 'internal',
-                channel_id: opts.channel,
-                session_type: 'dm',
-                session_id: opts.session,
-                peer_id: opts.peer,
-              },
             },
           },
           getSocketPath(),

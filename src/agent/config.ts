@@ -40,8 +40,8 @@ export function validateConfig(config: AgentConfig): void {
     errors.push('routing.default is required')
   }
 
-  if (!['per-peer', 'per-session', 'per-agent'].includes(config.routing.default)) {
-    errors.push('routing.default must be "per-peer", "per-session", or "per-agent"')
+  if (!['per-peer', 'per-conversation', 'per-agent'].includes(config.routing.default)) {
+    errors.push('routing.default must be "per-peer", "per-conversation", or "per-agent"')
   }
 
   if (!config.memory || typeof config.memory.compact_threshold_tokens !== 'number') {
