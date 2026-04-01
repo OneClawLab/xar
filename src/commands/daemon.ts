@@ -7,7 +7,7 @@ import { spawn } from 'child_process'
 import { openSync } from 'node:fs'
 import { join } from 'node:path'
 import { promises as fs } from 'node:fs'
-import { readPidFile, checkDaemonRunning, ensureDaemonNotRunning } from '../daemon/pid.js'
+import { readPidFile, checkDaemonRunning, ensureDaemonNotRunning, deletePidFile } from '../daemon/pid.js'
 import { getDaemonConfig, getSocketPath } from '../config.js'
 import { sendIpcMessage } from '../ipc/client.js'
 import { CliError } from '../types.js'
@@ -96,7 +96,21 @@ export function createDaemonCommand(): Command {
           throw new CliError('Daemon is not running', 1)
         }
 
-        process.kill(pid, 'SIGTERM')
+        try {
+          process.kill(pid, 'SIGTERM')
+        } catch (err: any) {
+          // If the process does not exist anymore, remove stale PID file and treat as stopped
+          if (err && (err.code === 'ESRCH' || err.errno === -3)) {
+            console.log('Daemon is not running (stale PID file removed)')
+            await deletePidFile(config.theClawHome)
+            return
+          }
+          // Permission errors should surface as a clear message
+          if (err && err.code === 'EPERM') {
+            throw new CliError(`Insufficient permission to stop daemon (PID: ${pid})`, 1)
+          }
+          throw err
+        }
 
         // Wait up to 30s for graceful shutdown
         for (let i = 0; i < 30; i++) {
@@ -108,9 +122,18 @@ export function createDaemonCommand(): Command {
           }
         }
 
-        // Force kill
-        process.kill(pid, 'SIGKILL')
-        console.log('Daemon force killed')
+        // Force kill (may throw ESRCH if already exited)
+        try {
+          process.kill(pid, 'SIGKILL')
+          console.log('Daemon force killed')
+        } catch (err: any) {
+          if (err && (err.code === 'ESRCH' || err.errno === -3)) {
+            console.log('Daemon is not running (stale PID file removed)')
+            await deletePidFile(config.theClawHome)
+            return
+          }
+          throw err
+        }
       } catch (err) {
         if (err instanceof CliError) {
           console.error(err.message)
