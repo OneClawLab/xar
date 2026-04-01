@@ -175,21 +175,22 @@ export class RunLoopImpl implements RunLoop {
 
       const conn = this.getConn()
       if (!conn) {
-        this.logger.error(`No IPC connection available for streaming (active connections: ${this.ipcConnections.size})`)
-        throw new Error('No IPC connection available for streaming')
+        this.logger.warn(`No IPC connection available for streaming (active connections: ${this.ipcConnections.size}), processing without streaming`)
       }
-      this.logger.debug(`Using IPC connection: ${conn.id}`)
+      this.logger.debug(`Using IPC connection: ${conn?.id ?? 'none'}`)
 
       // Build stream_id and delivery objects
       if (target) {
         streamId = this.nextStreamId(target)
-        deliver = new Deliver(conn, target)
+        if (conn) {
+          deliver = new Deliver(conn, target)
+        }
       } else {
         // Internal message — generate a placeholder stream_id for logging
         streamId = `internal:${this.agentId}:${this.streamSeq++}`
       }
 
-      const chunkWriter = new IpcChunkWriter(conn, streamId)
+      const chunkWriter = conn ? new IpcChunkWriter(conn, streamId) : null
 
       const result = await processTurn({
         chatInput,

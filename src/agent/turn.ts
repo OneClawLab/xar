@@ -10,8 +10,11 @@ import { chat, createBashExecTool } from 'pai'
 import type { ChatInput, ChatConfig, Message, Tool } from 'pai'
 import type { Writable } from 'node:stream'
 import { compactSession } from './memory.js'
-import { estimateTokens } from './session.js'
+import { estimateTokens, loadSessionMessages, writeSessionMessages } from './session.js'
+import type { SessionMessage } from './session.js'
 import type { Logger } from '../logging.js'
+import { promises as fs } from 'node:fs'
+import { dirname } from 'node:path'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -192,6 +195,28 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
         logger.warn(`LLM call failed (attempt=${attempt + 1}), retrying in ${delay}ms: ${lastError.message}`)
         await new Promise((resolve) => setTimeout(resolve, delay))
       }
+    }
+
+    // ── 3. Persist to session file ───────────────────────────────────────
+    try {
+      await fs.mkdir(dirname(sessionFile), { recursive: true })
+      const existing = await loadSessionMessages(sessionFile)
+      const userMsg: SessionMessage = {
+        role: 'user',
+        content: typeof chatInput.userMessage === 'string' ? chatInput.userMessage : JSON.stringify(chatInput.userMessage),
+        timestamp: new Date().toISOString(),
+      }
+      const newSessionMsgs: SessionMessage[] = newMessages.map((m) => ({
+        role: m.role as SessionMessage['role'],
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        timestamp: new Date().toISOString(),
+        ...(m.name !== undefined && { name: m.name }),
+        ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
+        ...(m.tool_calls !== undefined && { tool_calls: m.tool_calls }),
+      }))
+      await writeSessionMessages(sessionFile, [...existing, userMsg, ...newSessionMsgs])
+    } catch (err) {
+      logger.warn(`Failed to write session file (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
     }
 
     await callbacks.onStreamEnd()
