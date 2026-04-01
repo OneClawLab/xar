@@ -74,6 +74,7 @@ export async function loadSessionMessages(sessionFile: string): Promise<SessionM
  */
 export async function writeSessionMessages(sessionFile: string, messages: SessionMessage[]): Promise<void> {
   const lines = messages.map((m) => JSON.stringify(m)).join('\n') + '\n'
+  await fs.mkdir(dirname(sessionFile), { recursive: true })
   await fs.writeFile(sessionFile, lines, 'utf-8')
 }
 
