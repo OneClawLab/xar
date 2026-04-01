@@ -218,7 +218,7 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
         timestamp: new Date().toISOString(),
         ...(m.name !== undefined && { name: m.name }),
         ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
-        ...(m.tool_calls !== undefined && { tool_calls: m.tool_calls }),
+        ...((m as any).tool_calls !== undefined && { tool_calls: (m as any).tool_calls }),
       }))
       await writeSessionMessages(sessionFile, [...existing, userMsg, ...newSessionMsgs])
     } catch (err) {

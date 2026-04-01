@@ -37,13 +37,11 @@ export function createInitCommand(): Command {
 
         if (!paiProvider || !paiModel) {
           try {
-            const { loadConfig, resolveProvider } = await import('pai')
-            const paiConfig = await loadConfig()
-            if (paiConfig.defaultProvider) {
-              const { provider } = await resolveProvider(paiConfig)
-              if (!paiProvider) paiProvider = provider.name
-              if (!paiModel && provider.defaultModel) paiModel = provider.defaultModel
-            }
+            const { initPai } = await import('pai')
+            const pai = await initPai()
+            const info = await pai.getProviderInfo()
+            if (!paiProvider) paiProvider = info.name
+            if (!paiModel && info.defaultModel) paiModel = info.defaultModel
           } catch {
             // pai config not available
           }

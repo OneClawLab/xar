@@ -7,7 +7,6 @@
  *   - Same thread: serial (via per-thread promise chain)
  */
 
-import { initPai } from 'pai'
 import type { Pai } from 'pai'
 import type { InboundMessage, OutboundTarget } from '../types.js'
 import type { AsyncQueue } from './queue.js'
