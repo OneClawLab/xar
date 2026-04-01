@@ -5,8 +5,8 @@
 
 import { promises as fs } from 'fs'
 import { join } from 'path'
-import { chat } from 'pai'
-import type { ChatInput, ChatConfig } from 'pai'
+import { type Pai } from 'pai'
+import type { ChatInput } from 'pai'
 import {
   estimateTokens,
   estimateMessageTokens,
@@ -37,18 +37,14 @@ export interface CompactOptions {
   sessionFile: string
   systemPrompt: string
   userMessage: string
-  provider: string
-  model: string
-  apiKey: string
+  pai: Pai
+  /** Provider name (for selecting provider) */
+  provider?: string | undefined
+  /** Model name (for selecting model) */
+  model?: string | undefined
   contextWindow: number
   maxOutputTokens: number
   logger: Logger
-  /** pi-ai API type (e.g. 'azure-openai-responses') — needed for custom/Azure providers */
-  api?: string | undefined
-  /** Base URL for custom/self-hosted endpoints */
-  baseUrl?: string | undefined
-  /** Provider-specific options (e.g. azureApiVersion) */
-  providerOptions?: Record<string, unknown> | undefined
 }
 
 export function shouldCompact(
@@ -85,7 +81,7 @@ export interface CompactResult {
 }
 
 export async function compactSession(opts: CompactOptions): Promise<CompactResult> {
-  const { agentDir, threadId, sessionFile, systemPrompt, userMessage, provider, model, apiKey, contextWindow, maxOutputTokens, logger, api, baseUrl, providerOptions } = opts
+  const { agentDir, threadId, sessionFile, systemPrompt, userMessage, pai, provider, model, contextWindow, maxOutputTokens, logger } = opts
 
   const inputBudget = contextWindow - maxOutputTokens - SAFETY_MARGIN
   const statePath = stateFilePath(agentDir, threadId)
@@ -125,7 +121,7 @@ export async function compactSession(opts: CompactOptions): Promise<CompactResul
 
   let summaryText: string | null = null
   try {
-    summaryText = await generateSummary(agentDir, threadId, toSummarize, provider, model, apiKey, logger, api, baseUrl, providerOptions)
+    summaryText = await generateSummary(agentDir, threadId, toSummarize, pai, provider, model, logger)
   } catch (err) {
     logger.error(`Summarization failed for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling back to truncation`)
   }
@@ -187,13 +183,10 @@ async function generateSummary(
   agentDir: string,
   threadId: string,
   toSummarize: SessionMessage[],
-  provider: string,
-  model: string,
-  apiKey: string,
+  pai: Pai,
+  provider: string | undefined,
+  model: string | undefined,
   logger: Logger,
-  api?: string | undefined,
-  baseUrl?: string | undefined,
-  providerOptions?: Record<string, unknown> | undefined,
 ): Promise<string> {
   const memoryPath = join(agentDir, 'memory', `thread-${threadId}.md`)
   let existingSummary: string | null = null
@@ -218,19 +211,9 @@ async function generateSummary(
     userMessage,
   }
 
-  const chatConfig: ChatConfig = {
-    provider,
-    model,
-    apiKey,
-    stream: false,
-    ...(api !== undefined && { api }),
-    ...(baseUrl !== undefined && { baseUrl }),
-    ...(providerOptions !== undefined && { providerOptions }),
-  }
-
   const controller = new AbortController()
   let reply = ''
-  for await (const event of chat(chatInput, chatConfig, null, [], controller.signal)) {
+  for await (const event of pai.chat(chatInput, { provider, model, stream: false }, null, [], controller.signal)) {
     if (event.type === 'chat_end' && event.newMessages.length > 0) {
       const last = event.newMessages[event.newMessages.length - 1]
       if (last && last.role === 'assistant') {

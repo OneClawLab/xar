@@ -13,8 +13,8 @@ import { join } from 'path'
 import { promises as fs } from 'fs'
 import { Writable } from 'node:stream'
 import { Command } from 'commander'
-import { loadConfig, resolveProvider } from 'pai'
-import type { ChatConfig } from 'pai'
+import { initPai } from 'pai'
+import type { Pai } from 'pai'
 import { getDaemonConfig } from '../config.js'
 import { loadAgentConfig } from '../agent/config.js'
 import { loadIdentity } from '../agent/context.js'
@@ -113,20 +113,8 @@ export function createChatCommand(): Command {
         }
 
         const agentConfig = await loadAgentConfig(id, daemonConfig.theClawHome)
-        const paiConfig = await loadConfig()
-        const { provider } = await resolveProvider(paiConfig, agentConfig.pai.provider)
-
-        const chatConfig: ChatConfig = {
-          provider: agentConfig.pai.provider,
-          model: agentConfig.pai.model,
-          apiKey: provider.apiKey ?? '',
-          stream: true,
-          ...(provider.api !== undefined ? { api: provider.api } : {}),
-          ...(provider.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
-          ...(provider.reasoning !== undefined ? { reasoning: provider.reasoning } : {}),
-          ...(provider.contextWindow !== undefined ? { contextWindow: provider.contextWindow } : {}),
-          ...(provider.providerOptions !== undefined ? { providerOptions: provider.providerOptions } : {}),
-        }
+        const pai = await initPai()
+        const providerInfo = await pai.getProviderInfo(agentConfig.pai.provider)
 
         const sessionFile = join(agentDir, 'sessions', `${CLI_THREAD_ID}.jsonl`)
         await fs.mkdir(join(agentDir, 'sessions'), { recursive: true })
@@ -230,13 +218,16 @@ export function createChatCommand(): Command {
 
             const result = await processTurn({
               chatInput,
-              chatConfig,
+              pai,
+              provider: agentConfig.pai.provider,
+              model: agentConfig.pai.model,
+              stream: true,
               tokenWriter: stdoutWriter,
               sessionFile,
               agentDir,
               threadId: CLI_THREAD_ID,
-              contextWindow: provider.contextWindow,
-              maxOutputTokens: provider.maxTokens,
+              contextWindow: providerInfo.contextWindow,
+              maxOutputTokens: providerInfo.maxTokens,
               maxAttempts: agentConfig.retry.max_attempts,
               logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, close: async () => {} },
               callbacks,

@@ -75,9 +75,8 @@ describe('computeInputBudget', () => {
 
 // ── processTurn ──────────────────────────────────────────────────────────────
 
-// Mock pai.chat and compactSession so processTurn can run without real LLM/FS
+// Mock compactSession so processTurn can run without real FS
 vi.mock('pai', () => ({
-  chat: vi.fn(),
   createBashExecTool: vi.fn(() => ({ name: 'bash_exec', description: 'exec', parameters: {}, handler: async () => ({}) })),
 }))
 
@@ -85,7 +84,6 @@ vi.mock('../../src/agent/memory.js', () => ({
   compactSession: vi.fn(),
 }))
 
-import { chat as mockChat } from 'pai'
 import { compactSession as mockCompact } from '../../src/agent/memory.js'
 
 const noopLogger = {
@@ -116,10 +114,24 @@ function makeCallbacks(): TurnCallbacks & { calls: Record<string, unknown[][]> }
   }
 }
 
+/** Create a mock Pai instance whose chat() yields the given events */
+function mockPai(chatImpl?: (...args: unknown[]) => AsyncGenerator<unknown>): import('pai').Pai {
+  const defaultImpl = async function* () {
+    yield { type: 'chat_end' as const, newMessages: [] }
+  }
+  return {
+    chat: (chatImpl ?? defaultImpl) as any,
+    getProviderInfo: vi.fn().mockResolvedValue({ name: 'test', contextWindow: 128000, maxTokens: 4096 }),
+  }
+}
+
 function baseTurnParams(overrides?: Partial<TurnParams>): TurnParams {
   return {
     chatInput: { system: 'You are helpful', history: [{ role: 'user', content: 'hello' }], userMessage: 'hi' },
-    chatConfig: { provider: 'test', model: 'test-model', apiKey: 'key' },
+    pai: mockPai(),
+    provider: 'test',
+    model: 'test-model',
+    stream: true,
     tokenWriter: null,
     sessionFile: '/tmp/test-session.jsonl',
     agentDir: '/tmp/test-agent',
@@ -135,14 +147,13 @@ describe('processTurn', () => {
   it('sends ctx_usage based on chatInput history when not compacted', async () => {
     // compactSession returns not-compacted
     vi.mocked(mockCompact).mockResolvedValue({ compacted: false })
-    // chat yields a single chat_end with one assistant message
-    vi.mocked(mockChat).mockImplementation(async function* () {
-      yield { type: 'chat_end' as const, newMessages: [{ role: 'assistant' as const, content: 'reply' }] }
-    })
 
     const cbs = makeCallbacks()
     // Use a small context window so pct is meaningful with short messages
     await processTurn(baseTurnParams({
+      pai: mockPai(async function* () {
+        yield { type: 'chat_end' as const, newMessages: [{ role: 'assistant' as const, content: 'reply' }] }
+      }),
       callbacks: cbs,
       contextWindow: 200,
       maxOutputTokens: 50,
@@ -160,12 +171,10 @@ describe('processTurn', () => {
 
   it('uses provided contextWindow for budget calculation', async () => {
     vi.mocked(mockCompact).mockResolvedValue({ compacted: false })
-    vi.mocked(mockChat).mockImplementation(async function* () {
-      yield { type: 'chat_end' as const, newMessages: [] }
-    })
 
     const cbs = makeCallbacks()
     await processTurn(baseTurnParams({
+      pai: mockPai(),
       callbacks: cbs,
       contextWindow: 32000,
       maxOutputTokens: 2048,
@@ -177,12 +186,10 @@ describe('processTurn', () => {
 
   it('uses default 128K context window when not provided', async () => {
     vi.mocked(mockCompact).mockResolvedValue({ compacted: false })
-    vi.mocked(mockChat).mockImplementation(async function* () {
-      yield { type: 'chat_end' as const, newMessages: [] }
-    })
 
     const cbs = makeCallbacks()
     await processTurn(baseTurnParams({
+      pai: mockPai(),
       callbacks: cbs,
       contextWindow: undefined,
       maxOutputTokens: undefined,
@@ -200,12 +207,9 @@ describe('processTurn', () => {
       after_tokens: 5000,
       budget_tokens: 120000,
     })
-    vi.mocked(mockChat).mockImplementation(async function* () {
-      yield { type: 'chat_end' as const, newMessages: [] }
-    })
 
     const cbs = makeCallbacks()
-    await processTurn(baseTurnParams({ callbacks: cbs }))
+    await processTurn(baseTurnParams({ pai: mockPai(), callbacks: cbs }))
 
     expect(cbs.calls['onCompactStart']).toHaveLength(1)
     expect(cbs.calls['onCompactStart']![0]![0]).toBe('threshold')
@@ -224,34 +228,37 @@ describe('processTurn', () => {
       { role: 'assistant' as const, content: 'hello' },
       { role: 'tool' as const, content: 'result', name: 'bash_exec' },
     ]
-    vi.mocked(mockChat).mockImplementation(async function* () {
-      yield { type: 'chat_end' as const, newMessages: msgs }
-    })
 
-    const result = await processTurn(baseTurnParams())
+    const result = await processTurn(baseTurnParams({
+      pai: mockPai(async function* () {
+        yield { type: 'chat_end' as const, newMessages: msgs }
+      }),
+    }))
     expect(result.newMessages).toEqual(msgs)
   })
 
   it('calls onStreamError and throws on non-retryable LLM failure', async () => {
     vi.mocked(mockCompact).mockResolvedValue({ compacted: false })
-    vi.mocked(mockChat).mockImplementation(async function* () {
-      throw new Error('invalid api key')
-    })
 
     const cbs = makeCallbacks()
-    await expect(processTurn(baseTurnParams({ callbacks: cbs }))).rejects.toThrow('invalid api key')
+    await expect(processTurn(baseTurnParams({
+      pai: mockPai(async function* () { throw new Error('invalid api key') }),
+      callbacks: cbs,
+    }))).rejects.toThrow('invalid api key')
     expect(cbs.calls['onStreamError']).toHaveLength(1)
     expect(cbs.calls['onStreamError']![0]![0]).toBe('invalid api key')
   })
 
   it('compact failure is non-fatal — ctx_usage is skipped but chat proceeds', async () => {
     vi.mocked(mockCompact).mockRejectedValue(new Error('disk full'))
-    vi.mocked(mockChat).mockImplementation(async function* () {
-      yield { type: 'chat_end' as const, newMessages: [{ role: 'assistant' as const, content: 'ok' }] }
-    })
 
     const cbs = makeCallbacks()
-    const result = await processTurn(baseTurnParams({ callbacks: cbs }))
+    const result = await processTurn(baseTurnParams({
+      pai: mockPai(async function* () {
+        yield { type: 'chat_end' as const, newMessages: [{ role: 'assistant' as const, content: 'ok' }] }
+      }),
+      callbacks: cbs,
+    }))
 
     // ctx_usage not called (compact threw before it could)
     expect(cbs.calls['onCtxUsage']).toBeUndefined()

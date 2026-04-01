@@ -6,8 +6,8 @@
  * pipeline (compact → ctx_usage → chat → retry → write-back) is shared.
  */
 
-import { chat, createBashExecTool } from 'pai'
-import type { ChatInput, ChatConfig, Message, Tool } from 'pai'
+import { createBashExecTool } from 'pai'
+import type { ChatInput, Message, Tool, Pai } from 'pai'
 import type { Writable } from 'node:stream'
 import { compactSession } from './memory.js'
 import { estimateTokens, loadSessionMessages, writeSessionMessages } from './session.js'
@@ -38,7 +38,13 @@ export interface TurnCallbacks {
 
 export interface TurnParams {
   chatInput: ChatInput
-  chatConfig: ChatConfig
+  pai: Pai
+  /** Provider name from agent config */
+  provider: string
+  /** Model name from agent config */
+  model: string
+  /** Whether to stream tokens */
+  stream?: boolean | undefined
   /** Writable stream for token chunks (stdout for CLI, IpcChunkWriter for daemon) */
   tokenWriter: Writable | null
   /** Session file path for compact */
@@ -98,7 +104,7 @@ export function computeInputBudget(contextWindow?: number, maxOutputTokens?: num
  */
 export async function processTurn(params: TurnParams): Promise<TurnResult> {
   const {
-    chatInput, chatConfig, tokenWriter, sessionFile, agentDir, threadId,
+    chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId,
     maxAttempts, logger, callbacks, extraTools,
   } = params
 
@@ -117,15 +123,12 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
       sessionFile,
       systemPrompt: chatInput.system ?? '',
       userMessage: typeof chatInput.userMessage === 'string' ? chatInput.userMessage : JSON.stringify(chatInput.userMessage),
-      provider: chatConfig.provider,
-      model: chatConfig.model,
-      apiKey: chatConfig.apiKey,
+      pai,
+      provider,
+      model,
       contextWindow: cw,
       maxOutputTokens: mo,
       logger,
-      ...(chatConfig.api !== undefined && chatConfig.api !== null && { api: chatConfig.api }),
-      ...(chatConfig.baseUrl !== undefined && chatConfig.baseUrl !== null && { baseUrl: chatConfig.baseUrl }),
-      ...(chatConfig.providerOptions !== undefined && chatConfig.providerOptions !== null && { providerOptions: chatConfig.providerOptions }),
     })
 
     if (compactResult.compacted) {
@@ -150,15 +153,15 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
 
   try {
     await callbacks.onStreamStart()
-    logger.info(`Stream started: model=${chatConfig.model}`)
+    logger.info(`Stream started: model=${model}`)
 
     const controller = new AbortController()
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        logger.info(`LLM call: attempt=${attempt + 1}/${maxAttempts} provider=${chatConfig.provider} model=${chatConfig.model}`)
+        logger.info(`LLM call: attempt=${attempt + 1}/${maxAttempts} provider=${provider} model=${model}`)
 
-        for await (const event of chat(chatInput, chatConfig, tokenWriter, tools, controller.signal)) {
+        for await (const event of pai.chat(chatInput, { provider, model, stream: stream ?? true }, tokenWriter, tools, controller.signal)) {
           if (event.type === 'thinking_delta') {
             await callbacks.onThinkingDelta(event.delta)
           }

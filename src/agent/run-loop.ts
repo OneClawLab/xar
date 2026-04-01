@@ -7,8 +7,8 @@
  *   - Same thread: serial (via per-thread promise chain)
  */
 
-import { loadConfig, resolveProvider } from 'pai'
-import type { ChatConfig } from 'pai'
+import { initPai } from 'pai'
+import type { Pai } from 'pai'
 import type { InboundMessage, OutboundTarget } from '../types.js'
 import type { AsyncQueue } from './queue.js'
 import { loadAgentConfig } from './config.js'
@@ -42,6 +42,7 @@ export class RunLoopImpl implements RunLoop {
     private queue: AsyncQueue<InboundMessage>,
     // Map of active IPC connections — we pick the best one at message-processing time
     private ipcConnections: Map<string, IpcConnection>,
+    private pai: Pai,
     logger?: Logger,
   ) {
     this.logger = logger ?? {
@@ -149,22 +150,8 @@ export class RunLoopImpl implements RunLoop {
         content: msg.content,
       })
 
-      // Load pai config and resolve provider
-      const paiConfig = await loadConfig()
-      const provider = await resolveProvider(paiConfig, config.pai.provider)
-
-      const chatConfig: ChatConfig = {
-        provider: config.pai.provider,
-        model: config.pai.model,
-        apiKey: provider.apiKey,
-        stream: true,
-        ...(provider.provider.api !== undefined && { api: provider.provider.api }),
-        ...(provider.provider.baseUrl !== undefined && { baseUrl: provider.provider.baseUrl }),
-        ...(provider.provider.reasoning !== undefined && { reasoning: provider.provider.reasoning }),
-        ...(provider.provider.contextWindow !== undefined && { contextWindow: provider.provider.contextWindow }),
-        ...(provider.provider.maxTokens !== undefined && { maxTokens: provider.provider.maxTokens }),
-        ...(provider.provider.providerOptions !== undefined && { providerOptions: provider.provider.providerOptions }),
-      }
+      // Load pai config and resolve provider for context window info
+      const providerInfo = await this.pai.getProviderInfo(config.pai.provider)
 
       const agentDir = join(theClawHome, 'agents', this.agentId)
       const sessionFile = join(agentDir, 'sessions', `${threadId}.jsonl`)
@@ -194,13 +181,16 @@ export class RunLoopImpl implements RunLoop {
 
       const result = await processTurn({
         chatInput,
-        chatConfig,
+        pai: this.pai,
+        provider: config.pai.provider,
+        model: config.pai.model,
+        stream: true,
         tokenWriter: chunkWriter,
         sessionFile,
         agentDir,
         threadId,
-        contextWindow: provider.provider.contextWindow,
-        maxOutputTokens: provider.provider.maxTokens,
+        contextWindow: providerInfo.contextWindow,
+        maxOutputTokens: providerInfo.maxTokens,
         maxAttempts: config.retry.max_attempts,
         logger: this.logger,
         callbacks: {

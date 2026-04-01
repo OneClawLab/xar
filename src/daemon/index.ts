@@ -13,6 +13,8 @@ import { RunLoopImpl } from '../agent/run-loop.js'
 import type { IpcConnection } from '../ipc/types.js'
 import { createDaemonLogger, createAgentLogger } from '../logging.js'
 import type { Logger } from '../logging.js'
+import { initPai } from 'pai'
+import type { Pai } from 'pai'
 
 interface AgentRuntimeState {
   queue: AsyncQueueImpl<InboundMessage>
@@ -34,12 +36,16 @@ export class Daemon {
   private ipcConnections: Map<string, IpcConnection> = new Map()
   private logger: Logger | null = null
   private foreground = false
+  private pai: Pai | null = null
 
   async start(foreground = false): Promise<void> {
     this.foreground = foreground
     try {
       this.logger = await createDaemonLogger(undefined, foreground)
       this.logger.info('Daemon starting...')
+
+      this.pai = await initPai()
+      this.logger.info('Pai instance initialized')
 
       await writePidFile(this.config.theClawHome, process.pid)
       this.logger.info(`PID file written: ${process.pid}`)
@@ -152,7 +158,7 @@ export class Daemon {
       this.logger?.warn(`No IPC connection available when starting agent ${agentId}, run-loop will use first available connection`)
     }
 
-    const runLoop = new RunLoopImpl(agentId, queue, this.ipcConnections, agentLogger)
+    const runLoop = new RunLoopImpl(agentId, queue, this.ipcConnections, this.pai!, agentLogger)
     const runLoopPromise = runLoop.start()
 
     this.agents.set(agentId, {
