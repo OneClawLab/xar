@@ -62,6 +62,15 @@ export class Daemon {
       process.on('SIGTERM', () => { void this.gracefulShutdown() })
       process.on('SIGINT', () => { void this.gracefulShutdown() })
 
+      // Catch unhandled errors to prevent silent daemon crashes
+      process.on('uncaughtException', (err) => {
+        this.logger?.error(`UNCAUGHT EXCEPTION: ${err.stack ?? err.message}`)
+      })
+      process.on('unhandledRejection', (reason) => {
+        const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)
+        this.logger?.error(`UNHANDLED REJECTION: ${msg}`)
+      })
+
       this.logger.info('Daemon started successfully')
 
       // Keep daemon running
@@ -208,6 +217,7 @@ export class Daemon {
         case 'inbound_message': {
           if (!message.agent_id || !message.message) {
             this.logger?.warn(`inbound_message malformed: agent_id=${message.agent_id ?? 'missing'} message=${message.message ? 'present' : 'missing'}`)
+            await this.ipcServer.sendToConnection(connId, { type: 'error', error: 'Malformed inbound_message' })
             break
           }
           const state = this.agents.get(message.agent_id)
@@ -215,8 +225,10 @@ export class Daemon {
             state.queue.push(message.message)
             state.lastActivityAt = Date.now()
             this.logger?.info(`inbound_message queued: agent=${message.agent_id} source=${message.message.source} queue_depth=${state.queue.size()}`)
+            await this.ipcServer.sendToConnection(connId, { type: 'ok' })
           } else {
             this.logger?.warn(`inbound_message dropped: agent=${message.agent_id} not running (source=${message.message?.source ?? 'unknown'})`)
+            await this.ipcServer.sendToConnection(connId, { type: 'error', error: `Agent ${message.agent_id} is not running` })
           }
           break
         }
