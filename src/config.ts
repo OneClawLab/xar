@@ -31,6 +31,3 @@ export function getDaemonConfig(): DaemonConfig {
   }
 }
 
-export function getSocketPath(): string {
-  return join(getTheClawHome(), 'xar.sock')
-}

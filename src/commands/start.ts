@@ -3,7 +3,7 @@
  */
 
 import { Command } from 'commander'
-import { getDaemonConfig, getSocketPath } from '../config.js'
+import { getDaemonConfig } from '../config.js'
 import { checkDaemonRunning, readPidFile } from '../daemon/pid.js'
 import { sendIpcMessage } from '../ipc/client.js'
 import { CliError } from '../types.js'
@@ -25,7 +25,6 @@ export function createStartCommand(): Command {
         // Send agent_start message via IPC
         const response = await sendIpcMessage(
           { type: 'agent_start', agent_id: id },
-          getSocketPath(),
           config.ipcPort,
         )
 

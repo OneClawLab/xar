@@ -11,7 +11,6 @@ export interface IpcConnection {
 }
 
 export interface IpcServerConfig {
-  socketPath: string
   tcpPort: number
 }
 

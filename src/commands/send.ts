@@ -10,7 +10,7 @@
  */
 
 import { Command } from 'commander'
-import { getDaemonConfig, getSocketPath } from '../config.js'
+import { getDaemonConfig } from '../config.js'
 import { checkDaemonRunning } from '../daemon/pid.js'
 import { sendIpcMessage } from '../ipc/client.js'
 import { CliError } from '../types.js'
@@ -41,7 +41,6 @@ export function createSendCommand(): Command {
               content: message,
             },
           },
-          getSocketPath(),
           config.ipcPort,
         )
 

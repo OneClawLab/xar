@@ -1,12 +1,8 @@
 /**
- * IPC Server - WebSocket over Unix socket with TCP fallback
+ * IPC Server - WebSocket over TCP
  */
 
 import { WebSocketServer, WebSocket } from 'ws'
-import { createServer as createNetServer, Server as NetServer } from 'net'
-import { createServer as createUnixServer } from 'net'
-import { promises as fs } from 'fs'
-import { dirname } from 'path'
 import type { IpcMessage } from '../types.js'
 import type { IpcServer, IpcServerConfig, IpcConnection } from './types.js'
 
@@ -46,57 +42,7 @@ export class IpcServerImpl implements IpcServer {
   }
 
   async start(): Promise<void> {
-    // On Windows, Unix domain sockets are unreliable — go straight to TCP
-    if (process.platform === 'win32') {
-      await this.startTcpServer()
-      return
-    }
-    // Try Unix socket first, fallback to TCP
-    try {
-      await this.startUnixSocket()
-      return
-    } catch (err) {
-      // Unix socket failed — clean up any partial state
-      if (this.wss) { try { this.wss.close() } catch {} this.wss = null }
-      if (this.netServer) { try { this.netServer.close() } catch {} this.netServer = null }
-      // Fall through to TCP
-    }
     await this.startTcpServer()
-  }
-
-  private async startUnixSocket(): Promise<void> {
-    // Ensure directory exists
-    const dir = dirname(this.config.socketPath)
-    await fs.mkdir(dir, { recursive: true })
-
-    // Remove existing socket file if it exists
-    try {
-      await fs.unlink(this.config.socketPath)
-    } catch {
-      // Ignore if doesn't exist
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      const netServer = createUnixServer()
-      const wss = new WebSocketServer({ noServer: true })
-
-      netServer.on('upgrade', (request, socket, head) => {
-        wss.handleUpgrade(request, socket, head, (ws) => {
-          wss.emit('connection', ws, request)
-        })
-      })
-
-      netServer.on('error', (err) => {
-        reject(err)
-      })
-
-      netServer.listen(this.config.socketPath, () => {
-        this.netServer = netServer
-        this.wss = wss
-        this.setupWebSocketHandlers()
-        resolve()
-      })
-    })
   }
 
   private async startTcpServer(): Promise<void> {
@@ -170,22 +116,6 @@ export class IpcServerImpl implements IpcServer {
           resolve()
         })
       })
-    }
-
-    // Close net server
-    if (this.netServer) {
-      await new Promise<void>((resolve) => {
-        this.netServer!.close(() => {
-          resolve()
-        })
-      })
-    }
-
-    // Clean up socket file
-    try {
-      await fs.unlink(this.config.socketPath)
-    } catch {
-      // Ignore
     }
   }
 

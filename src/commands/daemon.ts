@@ -8,7 +8,7 @@ import { openSync } from 'node:fs'
 import { join } from 'node:path'
 import { promises as fs } from 'node:fs'
 import { readPidFile, checkDaemonRunning, ensureDaemonNotRunning, deletePidFile } from '../daemon/pid.js'
-import { getDaemonConfig, getSocketPath } from '../config.js'
+import { getDaemonConfig } from '../config.js'
 import { sendIpcMessage } from '../ipc/client.js'
 import { CliError } from '../types.js'
 
@@ -172,7 +172,7 @@ export function createDaemonCommand(): Command {
         }
 
         try {
-          const response = await sendIpcMessage({ type: 'daemon_status' }, getSocketPath(), config.ipcPort)
+          const response = await sendIpcMessage({ type: 'daemon_status' }, config.ipcPort)
           const data = response.data as { pid: number; uptime: number; agents: Array<{ id: string }> }
           if (options.json) {
             console.log(JSON.stringify({ running: true, ...data }))

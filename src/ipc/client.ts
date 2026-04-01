@@ -8,57 +8,14 @@ import { CliError } from '../types.js'
 
 export class IpcClient {
   private ws: WebSocket | null = null
-  private socketPath: string
   private tcpPort: number
 
-  constructor(socketPath: string, tcpPort: number) {
-    this.socketPath = socketPath
+  constructor(tcpPort: number) {
     this.tcpPort = tcpPort
   }
 
   async connect(): Promise<void> {
-    // On Windows, Unix domain sockets are unreliable — go straight to TCP
-    if (process.platform === 'win32') {
-      await this.connectTcp()
-      return
-    }
-    // Try Unix socket first, fall back to TCP
-    try {
-      await this.connectUnix()
-    } catch {
-      await this.connectTcp()
-    }
-  }
-
-  private async connectUnix(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const url = `ws+unix://${this.socketPath}`
-
-      let ws: WebSocket
-      try {
-        ws = new WebSocket(url)
-      } catch {
-        reject(new Error('Invalid Unix socket URL'))
-        return
-      }
-
-      const timeout = setTimeout(() => {
-        ws.close()
-        reject(new Error('Unix socket timeout'))
-      }, 3000)
-
-      ws.on('open', () => {
-        clearTimeout(timeout)
-        this.ws = ws
-        resolve()
-      })
-
-      ws.on('error', () => {
-        clearTimeout(timeout)
-        ws.close()
-        reject(new Error('Unix socket error'))
-      })
-    })
+    await this.connectTcp()
   }
 
   private async connectTcp(): Promise<void> {
@@ -125,10 +82,9 @@ export class IpcClient {
 
 export async function sendIpcMessage(
   message: IpcMessage,
-  socketPath: string,
   tcpPort: number,
 ): Promise<IpcMessage> {
-  const client = new IpcClient(socketPath, tcpPort)
+  const client = new IpcClient(tcpPort)
   try {
     await client.connect()
     const response = await client.send(message)

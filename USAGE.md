@@ -24,7 +24,7 @@ xar daemon start
 
 Starts the daemon as a background process. The daemon:
 - Writes PID to `~/.theclaw/xar.pid`
-- Listens on Unix socket `~/.theclaw/xar.sock` (or TCP `127.0.0.1:18792` as fallback)
+- Listens on TCP `127.0.0.1:18792`
 - Loads all agents with status `started`
 - Starts run-loops for each agent
 
@@ -42,7 +42,7 @@ Stops the daemon gracefully:
 - Sends SIGTERM to daemon process
 - Waits up to 30 seconds for run-loops to complete
 - Sends SIGKILL if timeout exceeded
-- Cleans up PID file and socket
+- Cleans up PID file
 
 **Exit codes:**
 - `0` — Success
@@ -499,7 +499,7 @@ XAR_IPC_PORT=18793 xar daemon start
 # Set TheClaw home directory
 export THECLAW_HOME=~/.theclaw
 
-# Set IPC TCP port (if Unix socket fails)
+# Set IPC TCP port
 export XAR_IPC_PORT=18792
 
 # Set log level

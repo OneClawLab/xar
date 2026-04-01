@@ -5,7 +5,7 @@
 import { Command } from 'commander'
 import { promises as fs } from 'fs'
 import { join } from 'path'
-import { getDaemonConfig, getSocketPath } from '../config.js'
+import { getDaemonConfig } from '../config.js'
 import { checkDaemonRunning } from '../daemon/pid.js'
 import { sendIpcMessage } from '../ipc/client.js'
 import { getThreadLib } from '../agent/thread-lib.js'
@@ -83,7 +83,6 @@ export function createStatusCommand(): Command {
             try {
               const response = await sendIpcMessage(
                 { type: 'agent_status', agent_id: id },
-                getSocketPath(),
                 config.ipcPort,
               )
               if (response.type === 'ok' && response.data) {
@@ -146,7 +145,7 @@ export function createStatusCommand(): Command {
 
           if (daemonRunning) {
             try {
-              const response = await sendIpcMessage({ type: 'daemon_status' }, getSocketPath(), config.ipcPort)
+              const response = await sendIpcMessage({ type: 'daemon_status' }, config.ipcPort)
               if (response.type === 'ok' && response.data) {
                 const data = response.data as { agents: Array<{ id: string; queueDepth: number; lastActivityAt: number }> }
                 for (const a of data.agents) {

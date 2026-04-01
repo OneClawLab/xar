@@ -35,19 +35,10 @@ export async function checkDaemonRunning(theClawHome: string): Promise<boolean> 
   if (pid === null) return false
 
   try {
-    // Check if process exists by sending signal 0 (no-op)
     process.kill(pid, 0)
     return true
   } catch {
-    // On Windows, process.kill(pid, 0) can be unreliable for detached children.
-    // Fallback: check if the IPC socket file exists (daemon creates it on startup).
-    try {
-      const socketPath = join(theClawHome, 'xar.sock')
-      await fs.access(socketPath)
-      return true
-    } catch {
-      return false
-    }
+    return false
   }
 }
 

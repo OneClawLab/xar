@@ -6,7 +6,7 @@ import { promises as fs } from 'fs'
 import { join } from 'path'
 import { createIpcServer } from '../ipc/server.js'
 import { writePidFile, deletePidFile } from './pid.js'
-import { getDaemonConfig, getSocketPath } from '../config.js'
+import { getDaemonConfig } from '../config.js'
 import type { IpcMessage, InboundMessage } from '../types.js'
 import { AsyncQueueImpl } from '../agent/queue.js'
 import { RunLoopImpl } from '../agent/run-loop.js'
@@ -29,7 +29,6 @@ interface AgentRuntimeState {
 export class Daemon {
   private config = getDaemonConfig()
   private ipcServer = createIpcServer({
-    socketPath: getSocketPath(),
     tcpPort: this.config.ipcPort,
   })
   private agents: Map<string, AgentRuntimeState> = new Map()
@@ -51,7 +50,7 @@ export class Daemon {
       this.logger.info(`PID file written: ${process.pid}`)
 
       await this.ipcServer.start()
-      this.logger.info(`IPC Server started on ${getSocketPath()}`)
+      this.logger.info(`IPC Server started on TCP port ${this.config.ipcPort}`)
 
       this.ipcServer.onMessage(this.handleIpcMessage.bind(this))
       this.ipcServer.onConnection((conn: IpcConnection, connId: string) => {

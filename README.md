@@ -11,7 +11,7 @@ xar is a daemon that runs in the background and manages autonomous AI agents. Ea
 - **Message routing**: Routes messages to conversation threads based on routing config
 - **Run-loop**: Processes messages sequentially, calls the LLM, and streams responses back
 
-The daemon uses IPC (WebSocket over Unix socket with TCP fallback) to communicate with CLI commands and xgw.
+The daemon uses IPC (WebSocket over TCP loopback) to communicate with CLI commands and xgw.
 
 ## Install
 
@@ -80,7 +80,6 @@ Default: `~/.theclaw/` — override with `THECLAW_HOME` environment variable.
 
 ```
 ~/.theclaw/
-├── xar.sock                    # IPC socket (Unix domain)
 ├── xar.pid                     # Daemon PID file
 ├── logs/
 │   └── xar.log                 # Daemon log
@@ -143,7 +142,7 @@ Agent configuration is stored in `~/.theclaw/agents/<id>/config.json`:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `THECLAW_HOME` | TheClaw data root directory | `~/.theclaw` |
-| `XAR_IPC_PORT` | TCP fallback port (if Unix socket fails) | `18792` |
+| `XAR_IPC_PORT` | TCP port for IPC | `18792` |
 | `XAR_LOG_LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 
 ## Dependencies
