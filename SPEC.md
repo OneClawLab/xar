@@ -1,6 +1,6 @@
 # xar - Agent Runtime Daemon
 
-xar 是 TheClaw v2 架构的核心 runtime daemon，负责 agent 生命周期管理、消息调度、LLM 调用和出站投递。
+xar 是 TheClaw 架构的核心 runtime daemon，负责 agent 生命周期管理、消息调度、LLM 调用和出站投递。
 
 模块类型：**CLI/Daemon**（见 [CLI-LIB-Module-Spec.md](../TheClaw/CLI-LIB-Module-Spec.md)）
 

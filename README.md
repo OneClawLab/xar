@@ -1,6 +1,6 @@
 # xar
 
-Agent Runtime Daemon for TheClaw v2 — manages agent lifecycle, message routing, LLM calls, and streaming delivery.
+Agent Runtime Daemon for TheClaw — manages agent lifecycle, message routing, LLM calls, and streaming delivery.
 
 ## How it works
 

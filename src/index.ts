@@ -34,7 +34,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')
 
 const program = new Command()
   .name('xar')
-  .description('xar - Agent Runtime Daemon for TheClaw v2')
+  .description('xar - Agent Runtime Daemon for TheClaw')
   .version(pkg.version)
 
 program.exitOverride()

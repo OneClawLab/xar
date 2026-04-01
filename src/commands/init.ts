@@ -85,7 +85,7 @@ export function createInitCommand(): Command {
         const kind = options.kind === 'system' ? 'system' : 'user'
         await fs.writeFile(
           join(agentDir, 'IDENTITY.md'),
-          `# Agent: ${id}\n\n## Role\n${kind === 'system' ? 'System agent for TheClaw v2' : 'User-defined agent'}\n\n## Capabilities\n- Respond to user queries\n- Execute bash commands\n- Maintain conversation context\n\n## Behavior Guidelines\n- Be helpful and respectful\n- Provide clear explanations\n- Ask for clarification when needed\n`,
+          `# Agent: ${id}\n\n## Role\n${kind === 'system' ? 'System agent for TheClaw' : 'User-defined agent'}\n\n## Capabilities\n- Respond to user queries\n- Execute bash commands\n- Maintain conversation context\n\n## Behavior Guidelines\n- Be helpful and respectful\n- Provide clear explanations\n- Ask for clarification when needed\n`,
         )
 
         // Create USAGE.md
