@@ -46,7 +46,16 @@ export function createDaemonCommand(): Command {
     .action(async (opts) => {
       try {
         const config = getDaemonConfig()
-        await ensureDaemonNotRunning(config.theClawHome)
+        try {
+          await ensureDaemonNotRunning(config.theClawHome)
+        } catch (err: any) {
+          // If daemon is already running, treat start as idempotent and succeed
+          if (err instanceof CliError && /already running/i.test(err.message)) {
+            console.log(err.message)
+            return
+          }
+          throw err
+        }
 
         if (opts.foreground) {
           // Foreground mode: run daemon directly in this process
