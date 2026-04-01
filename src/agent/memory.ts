@@ -43,6 +43,12 @@ export interface CompactOptions {
   contextWindow: number
   maxOutputTokens: number
   logger: Logger
+  /** pi-ai API type (e.g. 'azure-openai-responses') — needed for custom/Azure providers */
+  api?: string | undefined
+  /** Base URL for custom/self-hosted endpoints */
+  baseUrl?: string | undefined
+  /** Provider-specific options (e.g. azureApiVersion) */
+  providerOptions?: Record<string, unknown> | undefined
 }
 
 export function shouldCompact(
@@ -79,7 +85,7 @@ export interface CompactResult {
 }
 
 export async function compactSession(opts: CompactOptions): Promise<CompactResult> {
-  const { agentDir, threadId, sessionFile, systemPrompt, userMessage, provider, model, apiKey, contextWindow, maxOutputTokens, logger } = opts
+  const { agentDir, threadId, sessionFile, systemPrompt, userMessage, provider, model, apiKey, contextWindow, maxOutputTokens, logger, api, baseUrl, providerOptions } = opts
 
   const inputBudget = contextWindow - maxOutputTokens - SAFETY_MARGIN
   const statePath = stateFilePath(agentDir, threadId)
@@ -119,7 +125,7 @@ export async function compactSession(opts: CompactOptions): Promise<CompactResul
 
   let summaryText: string | null = null
   try {
-    summaryText = await generateSummary(agentDir, threadId, toSummarize, provider, model, apiKey, logger)
+    summaryText = await generateSummary(agentDir, threadId, toSummarize, provider, model, apiKey, logger, api, baseUrl, providerOptions)
   } catch (err) {
     logger.error(`Summarization failed for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling back to truncation`)
   }
@@ -185,6 +191,9 @@ async function generateSummary(
   model: string,
   apiKey: string,
   logger: Logger,
+  api?: string | undefined,
+  baseUrl?: string | undefined,
+  providerOptions?: Record<string, unknown> | undefined,
 ): Promise<string> {
   const memoryPath = join(agentDir, 'memory', `thread-${threadId}.md`)
   let existingSummary: string | null = null
@@ -214,6 +223,9 @@ async function generateSummary(
     model,
     apiKey,
     stream: false,
+    ...(api !== undefined && { api }),
+    ...(baseUrl !== undefined && { baseUrl }),
+    ...(providerOptions !== undefined && { providerOptions }),
   }
 
   const controller = new AbortController()

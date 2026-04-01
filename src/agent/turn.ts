@@ -123,6 +123,9 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
       contextWindow: cw,
       maxOutputTokens: mo,
       logger,
+      ...(chatConfig.api !== undefined && chatConfig.api !== null && { api: chatConfig.api }),
+      ...(chatConfig.baseUrl !== undefined && chatConfig.baseUrl !== null && { baseUrl: chatConfig.baseUrl }),
+      ...(chatConfig.providerOptions !== undefined && chatConfig.providerOptions !== null && { providerOptions: chatConfig.providerOptions }),
     })
 
     if (compactResult.compacted) {
