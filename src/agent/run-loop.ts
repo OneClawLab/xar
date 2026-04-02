@@ -11,7 +11,7 @@ import type { Pai } from 'pai'
 import type { InboundMessage, OutboundTarget } from '../types.js'
 import type { AsyncQueue } from './queue.js'
 import { loadAgentConfig } from './config.js'
-import { routeMessage, determineThreadId, parseSource } from './router.js'
+import { routeMessage, determineThreadId, parseSource, extractConvId } from './router.js'
 import { buildContext } from './context.js'
 import { Deliver } from './deliver.js'
 import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
@@ -43,6 +43,14 @@ export class RunLoopImpl implements RunLoop {
     private ipcConnections: Map<string, IpcConnection>,
     private pai: Pai,
     logger?: Logger,
+    /**
+     * Optional callback for agent-to-agent reply routing.
+     * When a worker finishes processing an internal message, its assistant reply
+     * is automatically delivered back to the sender agent via this callback.
+     * Provided by the Daemon so the run-loop doesn't need to know about the
+     * full agent registry.
+     */
+    private sendToAgent?: (agentId: string, message: InboundMessage) => boolean,
   ) {
     this.logger = logger ?? {
       info: () => {},
@@ -160,7 +168,8 @@ export class RunLoopImpl implements RunLoop {
       this.logger.debug('LLM context built')
 
       const conn = this.getConn()
-      if (!conn) {
+      const isInternal = parseSource(msg.source).kind === 'internal'
+      if (!conn && !isInternal) {
         this.logger.warn(`No IPC connection available for streaming (active connections: ${this.ipcConnections.size}), processing without streaming`)
       }
       this.logger.debug(`Using IPC connection: ${conn?.id ?? 'none'}`)
@@ -178,6 +187,12 @@ export class RunLoopImpl implements RunLoop {
 
       const chunkWriter = conn ? new IpcChunkWriter(conn, streamId) : null
 
+      const convId = extractConvId(msg.source)
+      const extraEnv: Record<string, string> = {
+        XAR_AGENT_ID: this.agentId,
+        XAR_CONV_ID: convId,
+      }
+
       const result = await processTurn({
         chatInput,
         pai: this.pai,
@@ -192,6 +207,7 @@ export class RunLoopImpl implements RunLoop {
         maxOutputTokens: providerInfo.maxTokens,
         maxAttempts: config.retry.max_attempts,
         logger: this.logger,
+        extraEnv,
         callbacks: {
           onCompactStart: (reason) => deliver?.streamCompactStart(streamId, reason),
           onCompactEnd: (before, after) => deliver?.streamCompactEnd(streamId, before, after),
@@ -222,6 +238,36 @@ export class RunLoopImpl implements RunLoop {
       })
       await threadStore.pushBatch(threadEvents)
       this.logger.info(`Message processed successfully: stream=${streamId} records=${threadEvents.length}`)
+
+      // ── Agent-to-agent auto-reply ─────────────────────────────────────────
+      // When this agent processed an internal message (from another agent),
+      // automatically deliver the assistant reply back to the sender.
+      // This is the core of the agent-to-agent interaction model: the worker
+      // processes the message exactly like any other message, and the reply
+      // is routed back transparently — no special handling needed in the worker.
+      const parsedSource = parseSource(msg.source)
+      if (parsedSource.kind === 'internal' && parsedSource.sender_agent_id && this.sendToAgent) {
+        const senderAgentId = parsedSource.sender_agent_id
+        // Extract the assistant reply text (first assistant message)
+        const assistantMsg = result.newMessages.find((m: any) => m.role === 'assistant')
+        if (assistantMsg) {
+          const replyContent = typeof assistantMsg.content === 'string'
+            ? assistantMsg.content
+            : JSON.stringify(assistantMsg.content)
+          // Build reply source: internal message from this agent back to sender
+          // conv_id is preserved so the sender routes it to the same thread
+          const replySource = `internal:agent:${convId}:${this.agentId}`
+          const delivered = this.sendToAgent(senderAgentId, {
+            source: replySource,
+            content: replyContent,
+          })
+          if (delivered) {
+            this.logger.info(`Auto-reply sent to agent ${senderAgentId}: source=${replySource}`)
+          } else {
+            this.logger.warn(`Auto-reply to agent ${senderAgentId} dropped: agent not running`)
+          }
+        }
+      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       this.logger.error(`Message processing failed: ${errorMsg}`)

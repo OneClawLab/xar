@@ -94,6 +94,21 @@ export function determineThreadId(config: AgentConfig, source: string): string {
 }
 
 /**
+ * Extract conversation ID from a source address.
+ * - internal: returns conversation_id (3rd segment)
+ * - external: returns conversation_id field
+ * - self / unknown: returns empty string
+ */
+export function extractConvId(source: string): string {
+  try {
+    const parsed = parseSource(source)
+    return parsed.conversation_id ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Route an inbound message to the appropriate thread.
  * Returns the ThreadStore for that thread.
  */

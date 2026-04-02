@@ -6,60 +6,60 @@
 
 ## Tasks
 
-- [ ] 1. pai: createBashExecTool 支持 extraEnv
-  - [ ] 1.1 修改 `pai/src/tools/bash-exec.ts`，为 `createBashExecTool()` 添加可选参数 `extraEnv?: Record<string, string>`
+- [x] 1. pai: createBashExecTool 支持 extraEnv
+  - [x] 1.1 修改 `pai/src/tools/bash-exec.ts`，为 `createBashExecTool()` 添加可选参数 `extraEnv?: Record<string, string>`
     - `spawn` 调用时：`env: extraEnv ? { ...process.env, ...extraEnv } : undefined`
     - `env: undefined` 保持向后兼容（Node.js 默认继承 `process.env`）
     - _Requirements: 4.1_
-  - [ ] 1.2 在 pai repo 编写单元测试验证 extraEnv 注入
+  - [x] 1.2 在 pai repo 编写单元测试验证 extraEnv 注入
     - 传入 `extraEnv: { TEST_VAR: 'hello' }`，执行 `echo $TEST_VAR`，验证 stdout 包含 `hello`
     - _Requirements: 4.1_
 
-- [ ] 2. xar: router 新增 extractConvId
-  - [ ] 2.1 在 `src/agent/router.ts` 新增导出函数 `extractConvId(source: string): string`
+- [x] 2. xar: router 新增 extractConvId
+  - [x] 2.1 在 `src/agent/router.ts` 新增导出函数 `extractConvId(source: string): string`
     - internal source：返回 `conversation_id`（第三段）
     - external source：返回 `conversation_id` 字段
     - `self` 或解析失败：返回空字符串 `''`
     - _Requirements: 4.5_
-  - [ ] 2.2 在 `vitest/unit/router.test.ts` 补充 `extractConvId` 的单元测试
+  - [x] 2.2 在 `vitest/unit/router.test.ts` 补充 `extractConvId` 的单元测试
     - 覆盖 internal source、external source、`self`、格式错误的情况
     - _Requirements: 4.5_
 
-- [ ] 3. xar: processTurn 支持 extraEnv
-  - [ ] 3.1 修改 `src/agent/turn.ts`，在 `TurnParams` 接口新增 `extraEnv?: Record<string, string> | undefined`
+- [x] 3. xar: processTurn 支持 extraEnv
+  - [x] 3.1 修改 `src/agent/turn.ts`，在 `TurnParams` 接口新增 `extraEnv?: Record<string, string> | undefined`
     - 将 `createBashExecTool()` 调用改为 `createBashExecTool(extraEnv)`
     - _Requirements: 4.2_
 
-- [ ] 4. xar: run-loop 传入 extraEnv 并明确处理 internal source
-  - [ ] 4.1 修改 `src/agent/run-loop.ts` 的 `processMessage()`
+- [x] 4. xar: run-loop 传入 extraEnv 并明确处理 internal source
+  - [x] 4.1 修改 `src/agent/run-loop.ts` 的 `processMessage()`
     - 调用 `processTurn` 前构造 `extraEnv: { XAR_AGENT_ID: this.agentId, XAR_CONV_ID: extractConvId(msg.source) }`
     - 传入 `processTurn({ ..., extraEnv })`
     - _Requirements: 4.3_
-  - [ ] 4.2 修改 `processMessage()` 中的 "no connection" warning 逻辑
+  - [x] 4.2 修改 `processMessage()` 中的 "no connection" warning 逻辑
     - 解析 `msg.source` 的 kind，仅当 `kind !== 'internal'` 时才记录 warning
     - 确认 internal source 的 stream_id 格式为 `internal:<agentId>:<seq>`（已有实现，验证正确）
     - _Requirements: 3.4, 3.5_
-  - [ ] 4.3 在 `vitest/unit/run-loop.test.ts` 补充 internal source 行为测试
+  - [x] 4.3 在 `vitest/unit/run-loop.test.ts` 补充 internal source 行为测试
     - `buildTarget()` 对 internal source 返回 `null`
     - 处理 internal source 消息时不触发 "no connection" warning
     - _Requirements: 3.1, 3.4_
 
-- [ ] 5. xar: xar send 支持 internal source 自动构造
-  - [ ] 5.1 修改 `src/commands/send.ts`
+- [x] 5. xar: xar send 支持 internal source 自动构造
+  - [x] 5.1 修改 `src/commands/send.ts`
     - 移除 `--source` 的默认值 `'external:cli:default:dm:cli:cli'`，改为 `undefined`
     - 新增 `buildInternalSource(opts)` 函数：`--source` 显式提供时直通；否则从 `XAR_AGENT_ID` / `XAR_CONV_ID` 构造 `internal:agent:<convId>:<agentId>`；两者都缺失时 exit 2
     - _Requirements: 5.1, 5.2, 5.3_
-  - [ ] 5.2 新增 `vitest/unit/send.test.ts`
+  - [x] 5.2 新增 `vitest/unit/send.test.ts`
     - `buildInternalSource()` 在 env 变量设置时的正确构造
     - `buildInternalSource()` 在 `--source` 显式提供时的直通行为
     - `buildInternalSource()` 在 env 变量缺失时抛出 CliError（exitCode 2）
     - _Requirements: 5.1, 5.2, 5.3_
 
-- [ ] 6. Checkpoint — 确保所有测试通过
+- [x] 6. Checkpoint — 确保所有测试通过
   - 运行 `npm test`，确保所有测试通过，如有问题请告知。
 
-- [ ] 7. xar: 属性测试
-  - [ ] 7.1 新增 `vitest/pbt/agent-to-agent.pbt.test.ts`，实现 5 个 correctness properties
+- [x] 7. xar: 属性测试
+  - [x] 7.1 新增 `vitest/pbt/agent-to-agent.pbt.test.ts`，实现 5 个 correctness properties
     - **Property 1**: Internal source round-trip parsing — 生成随机 (conv_type, conv_id, sender_id)，构造 → 解析 → 字段匹配
       - Tag: `Feature: agent-to-agent, Property 1: internal source round-trip parsing`
       - _Requirements: 1.1_
@@ -77,7 +77,7 @@
       - _Requirements: 5.1_
     - 每个属性测试最少运行 100 次（`numRuns: 100`）
 
-- [ ] 8. Final Checkpoint — 确保所有测试通过
+- [x] 8. Final Checkpoint — 确保所有测试通过
   - 运行 `npm test`，确保所有测试通过，如有问题请告知。
 
 ## Notes

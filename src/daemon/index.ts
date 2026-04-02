@@ -157,7 +157,14 @@ export class Daemon {
       this.logger?.warn(`No IPC connection available when starting agent ${agentId}, run-loop will use first available connection`)
     }
 
-    const runLoop = new RunLoopImpl(agentId, queue, this.ipcConnections, this.pai!, agentLogger)
+    const runLoop = new RunLoopImpl(agentId, queue, this.ipcConnections, this.pai!, agentLogger, (targetId, message) => {
+      const targetState = this.agents.get(targetId)
+      if (!targetState) return false
+      targetState.queue.push(message)
+      targetState.lastActivityAt = Date.now()
+      this.logger?.info(`agent-to-agent: ${agentId} → ${targetId} source=${message.source}`)
+      return true
+    })
     const runLoopPromise = runLoop.start()
 
     this.agents.set(agentId, {

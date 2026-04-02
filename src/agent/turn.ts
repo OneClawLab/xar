@@ -61,6 +61,8 @@ export interface TurnParams {
   callbacks: TurnCallbacks
   /** Extra tools beyond the default bash_exec */
   extraTools?: Tool[]
+  /** Extra environment variables to inject into bash_exec tool */
+  extraEnv?: Record<string, string> | undefined
 }
 
 export interface TurnResult {
@@ -105,14 +107,14 @@ export function computeInputBudget(contextWindow?: number, maxOutputTokens?: num
 export async function processTurn(params: TurnParams): Promise<TurnResult> {
   const {
     chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId,
-    maxAttempts, logger, callbacks, extraTools,
+    maxAttempts, logger, callbacks, extraTools, extraEnv,
   } = params
 
   const { contextWindow: cw, maxOutputTokens: mo, inputBudget } = computeInputBudget(
     params.contextWindow, params.maxOutputTokens,
   )
 
-  const tools: Tool[] = [createBashExecTool(), ...(extraTools ?? [])]
+  const tools: Tool[] = [createBashExecTool(extraEnv), ...(extraTools ?? [])]
 
   // ── 1. Compact + ctx_usage ──────────────────────────────────────────────
 

@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { determineThreadId, parseSource } from '../../src/agent/router.js'
+import { determineThreadId, extractConvId, parseSource } from '../../src/agent/router.js'
 import type { AgentConfig } from '../../src/agent/types.js'
 
 describe('Router', () => {
@@ -111,6 +111,30 @@ describe('Router', () => {
     it('should throw on unknown routing mode', () => {
       const config = { ...baseConfig, routing: { default: 'unknown-mode' as any } }
       expect(() => determineThreadId(config, 'external:telegram:main:dm:alice:alice')).toThrow()
+    })
+  })
+
+  describe('extractConvId', () => {
+    it('should return conversation_id from internal source', () => {
+      // internal:<conv_type>:<conv_id>:<sender_agent_id>
+      expect(extractConvId('internal:agent:conv-abc:evolver')).toBe('conv-abc')
+    })
+
+    it('should return conversation_id from external source', () => {
+      // external:<ch_type>:<ch_instance>:<conv_type>:<conv_id>:<peer_id>
+      expect(extractConvId('external:telegram:main:dm:conv-123:user1')).toBe('conv-123')
+    })
+
+    it('should return empty string for self source', () => {
+      expect(extractConvId('self')).toBe('')
+    })
+
+    it('should return empty string for malformed internal source (too few segments)', () => {
+      expect(extractConvId('internal:only-two')).toBe('')
+    })
+
+    it('should return empty string for completely invalid string', () => {
+      expect(extractConvId('not-a-valid-source')).toBe('')
     })
   })
 })
