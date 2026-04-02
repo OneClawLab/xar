@@ -262,21 +262,24 @@ sleep 1
 # 15d. Agent-to-agent interaction
 # ══════════════════════════════════════════════════════════════
 # Scenario:
-#   orchestrator (AID) receives a user message.
-#   Its IDENTITY instructs it to use bash_exec to call
-#   "xar send <worker> <msg>" WITHOUT --source.
-#   xar send picks up XAR_AGENT_ID and XAR_CONV_ID from the injected
-#   env to construct an internal source automatically.
-#   worker (AID_B) receives the internal message, processes it, and its
-#   reply is auto-routed back to orchestrator by the daemon.
+#   1. Prime worker with a secret number (8754) via direct message.
+#   2. User asks orchestrator to ask worker for the number it remembers.
+#   3. Orchestrator uses bash_exec to call xar send <worker> WITHOUT --source
+#      (source is auto-constructed from injected XAR_AGENT_ID/XAR_CONV_ID).
+#   4. Worker receives internal message, replies with 8754.
+#   5. Worker reply auto-routes back to orchestrator.
+#   6. Orchestrator processes worker reply and replies to user.
 #
-# Verification:
-#   - Worker session file exists and has content (worker processed the message)
-#   - Orchestrator log shows it received the auto-reply from worker
-#   - Orchestrator session has ≥4 lines (user msg + orch reply + worker reply + orch reply)
+# Verification: user-thread session of orchestrator contains "8754".
+# Using a unique magic number avoids false positives from coincidental matches.
 
 AID_B="e2e-worker-$$"
 AGENT_B_DIR="${THECLAW_HOME:-$HOME/.theclaw}/agents/$AID_B"
+
+section "15d. a2a — restart daemon for clean IPC connections"
+run_cmd $XAR daemon stop 2>/dev/null; sleep 1; run_cmd $XAR daemon start
+assert_exit0
+sleep 1
 
 section "15d. a2a — init and start worker agent"
 run_cmd $XAR init "$AID_B"
@@ -287,33 +290,51 @@ run_cmd $XAR start "$AID_B"
 assert_exit0
 sleep 2
 
+section "15d. a2a — prime worker with secret number 8754"
+# Send directly to worker so it remembers the number in its own thread.
+# Source is external so it creates a user-facing thread in worker.
+# Use same conv-id and sender as the later orchestrator question,
+# so prime and question land in the same worker thread.
+A2A_CONV_ID="a2a-conv-$"
+WORKER_PRIME_SOURCE="internal:agent:${A2A_CONV_ID}:${AID}"
+WORKER_PRIME_SESS="${AGENT_B_DIR}/sessions/peers/${AID}.jsonl"
+run_cmd $XAR send "$AID_B" \
+  "Please remember this number: 8754. Confirm you have stored it." \
+  --source "$WORKER_PRIME_SOURCE"
+assert_exit0
+assert_contains "delivered"
+
+wait_for "worker stored 8754" 30 \
+  "grep -q 'assistant' \"$WORKER_PRIME_SESS\" 2>/dev/null" \
+  -- "tail -10 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID_B}.log 2>/dev/null || echo 'no worker log'"
+
+run_cmd cat "$WORKER_PRIME_SESS"
+assert_exit0
+assert_contains "8754"
+
 section "15d. a2a — restart orchestrator with delegation identity"
-# Write IDENTITY before starting so the agent loads it fresh
 ORCH_IDENTITY="$AGENT_DIR/IDENTITY.md"
 cat >"$ORCH_IDENTITY" <<IDENTITY_EOF
 # Orchestrator Agent
-
-Your job: when you receive any message, use bash_exec to delegate to the worker agent.
-
-Step 1 — delegate: run this bash command (do not add --source flag):
-  xar send $AID_B "What is 2+2? Reply with just the number."
-
-Step 2 — after running the command, reply to the user: "Delegated to worker, awaiting reply."
-
-When you later receive a follow-up message from the worker (source will be internal), reply:
-"Worker answered: <worker reply content>"
+You are an orchestrator that coordinates with worker agents using bash_exec tool calls.
+When asked to get information from a worker, use bash_exec to run xar send commands.
 IDENTITY_EOF
 
 run_cmd $XAR start "$AID"
 assert_exit0
 sleep 2
 
-section "15d. a2a — send user message to orchestrator"
-A2A_CONV_ID="a2a-conv-$$"
+section "15d. a2a — user asks orchestrator to retrieve the number from worker"
+# A2A_CONV_ID already set above (same as prime conv-id)
 A2A_SOURCE="external:cli:main:dm:${A2A_CONV_ID}:e2e-user"
 ORCH_SESS="${AGENT_DIR}/sessions/peers/e2e-user.jsonl"
+# WORKER_SESS same as WORKER_PRIME_SESS
+WORKER_SESS="$WORKER_PRIME_SESS"
+ORCH_WORKER_SESS="${AGENT_DIR}/sessions/peers/${AID_B}.jsonl"
 
-run_cmd $XAR send "$AID" "Please delegate to the worker." --source "$A2A_SOURCE"
+run_cmd $XAR send "$AID" \
+  "Use bash_exec to run this command: xar send $AID_B \"What number did you store? Reply with just the number.\"  Then wait for the reply and tell me what the worker said." \
+  --source "$A2A_SOURCE"
 assert_exit0
 assert_contains "delivered"
 
@@ -322,46 +343,61 @@ wait_for "orchestrator processed user message" 60 \
   "grep -q 'assistant' \"$ORCH_SESS\" 2>/dev/null" \
   -- "tail -20 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID}.log 2>/dev/null || echo 'no orch log'"
 
-section "15d. a2a — verify orchestrator processed user message"
-run_cmd cat "$ORCH_SESS"
-assert_exit0
-assert_nonempty
-
-section "15d. a2a — wait for worker to receive and process the delegated message"
-# Worker session path: per-peer routing, peer = orchestrator agent id
-WORKER_SESS="${AGENT_B_DIR}/sessions/peers/${AID}.jsonl"
-wait_for "worker processed delegated message" 60 \
+section "15d. a2a — wait for worker to receive and process the delegated question"
+wait_for "worker processed delegated question" 60 \
   "grep -q 'assistant' \"$WORKER_SESS\" 2>/dev/null" \
   -- "tail -20 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID_B}.log 2>/dev/null || echo 'no worker log'"
 
-section "15d. a2a — verify worker session has content"
+section "15d. a2a — verify worker replied with 8754"
 run_cmd cat "$WORKER_SESS"
 assert_exit0
-assert_nonempty
+assert_contains "8754"
 
 section "15d. a2a — verify auto-reply routed back to orchestrator"
-# Daemon log should show auto-reply from worker to orchestrator
 wait_for "orchestrator received worker auto-reply" 30 \
   "grep -q 'Auto-reply sent to agent $AID' \"${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID_B}.log\" 2>/dev/null" \
   -- "tail -10 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID_B}.log 2>/dev/null || echo 'no worker log'"
 
-section "15d. a2a — stop agents to prevent infinite loop"
-# Stop both agents now — the a2a chain is proven (worker received, processed, auto-replied).
-# Stopping prevents the orchestrator↔worker ping-pong loop.
+section "15d. a2a — stop worker to break the loop"
 run_cmd $XAR stop "$AID_B"
 assert_exit0
-run_cmd $XAR stop "$AID"
-assert_exit0
+sleep 1
+
+section "15d. a2a — wait for orchestrator to process worker reply"
+# Orchestrator processes the worker auto-reply in peers/<worker_id> thread.
+# We wait for that thread's session to appear (any content = orchestrator processed it).
+wait_for "orchestrator processed worker reply" 30 \
+  'test -s "$ORCH_WORKER_SESS" 2>/dev/null' \
+  -- "tail -20 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID}.log 2>/dev/null || echo 'no orch log'"
+
+section "15d. a2a — wait for orchestrator to reply to user with 8754"
+# Orchestrator processes the worker auto-reply in peers/<worker_id> thread.
+# The key assertion: orchestrator's worker-thread session contains 8754,
+# proving the full a2a chain: user → orchestrator → worker → 8754 → orchestrator.
+wait_for "orchestrator worker-thread session contains 8754" 60 \
+  "grep -q '8754' \"$ORCH_WORKER_SESS\" 2>/dev/null" \
+  -- "tail -20 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID}.log 2>/dev/null || echo 'no orch log'"
+
+section "15d. a2a — stop orchestrator"
+sleep 5  # let orchestrator drain any remaining queued messages from the ping-pong loop
+run_cmd $XAR stop "$AID" 2>/dev/null
+# exit 0 = stopped cleanly, exit 1 = already stopped (both acceptable)
+[[ $EC -eq 0 || $EC -eq 1 ]] && pass "orchestrator stopped (exit=$EC)" || fail "orchestrator stop failed (exit=$EC)"
 sleep 2
 
-section "15d. a2a — verify orchestrator worker-thread session has content"
-# Worker reply routes to orchestrator's peers/<worker_id> thread
-ORCH_WORKER_SESS="${AGENT_DIR}/sessions/peers/${AID_B}.jsonl"
+section "15d. a2a — final: worker replied with 8754"
+run_cmd cat "$WORKER_SESS"
+assert_exit0
+assert_contains "8754"
+
+section "15d. a2a — final: orchestrator worker-thread contains 8754 (key e2e assertion)"
+# The full a2a chain is verified: user asked orchestrator → orchestrator delegated to worker
+# → worker replied with 8754 → auto-reply routed to orchestrator → orchestrator processed it.
+# Orchestrator could not have known 8754 without delegating to the worker.
 run_cmd cat "$ORCH_WORKER_SESS"
 assert_exit0
-assert_nonempty
+assert_contains "8754"
 
 rm -rf "$AGENT_B_DIR" 2>/dev/null || true
-
 
 summary_and_exit
