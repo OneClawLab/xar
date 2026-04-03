@@ -9,6 +9,7 @@ import { getDaemonConfig } from '../config.js'
 import { CliError } from '../types.js'
 import type { AgentConfig } from '../agent/types.js'
 import { getThreadLib } from '../agent/thread-lib.js'
+import { IDENTITY_TEMPLATE } from './identity-template.js'
 
 export function createInitCommand(): Command {
   return new Command('init')
@@ -81,10 +82,7 @@ export function createInitCommand(): Command {
 
         // Create IDENTITY.md
         const kind = options.kind === 'system' ? 'system' : 'user'
-        await fs.writeFile(
-          join(agentDir, 'IDENTITY.md'),
-          `# Agent: ${id}\n\n## Role\n${kind === 'system' ? 'System agent for TheClaw' : 'User-defined agent'}\n\n## Capabilities\n- Respond to user queries\n- Execute bash commands\n- Maintain conversation context\n\n## Behavior Guidelines\n- Be helpful and respectful\n- Provide clear explanations\n- Ask for clarification when needed\n`,
-        )
+        await fs.writeFile(join(agentDir, 'IDENTITY.md'), IDENTITY_TEMPLATE)
 
         // Create USAGE.md
         await fs.writeFile(
