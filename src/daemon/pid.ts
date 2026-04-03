@@ -35,6 +35,7 @@ export async function checkDaemonRunning(theClawHome: string): Promise<boolean> 
   if (pid === null) return false
 
   try {
+    // a signal of `0` can be used to test for the existence of a process
     process.kill(pid, 0)
     return true
   } catch {
