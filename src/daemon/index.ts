@@ -164,7 +164,7 @@ export class Daemon {
       targetState.lastActivityAt = Date.now()
       this.logger?.info(`agent-to-agent: ${agentId} → ${targetId} source=${message.source}`)
       return true
-    })
+    }, () => Array.from(this.agents.keys()))
     const runLoopPromise = runLoop.start()
 
     this.agents.set(agentId, {

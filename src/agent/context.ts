@@ -9,6 +9,7 @@ import { join } from 'path'
 import { getDaemonConfig } from '../config.js'
 import type { AgentConfig } from './types.js'
 import type { InboundMessage } from '../types.js'
+import { parseSource } from './router.js'
 
 /**
  * Load agent identity (system prompt)
@@ -121,6 +122,79 @@ function extractPeerId(source: string): string | undefined {
 }
 
 /**
+ * Extract distinct peer_ids from thread events with external sources.
+ */
+function extractRecentParticipants(events: { source: string }[]): string[] {
+  const seen = new Set<string>()
+  for (const ev of events) {
+    if (!ev.source.startsWith('external:')) continue
+    try {
+      const parsed = parseSource(ev.source)
+      if (parsed.peer_id) seen.add(parsed.peer_id)
+    } catch {
+      // skip malformed sources
+    }
+  }
+  return [...seen]
+}
+
+/**
+ * Build Communication Context section for the system prompt.
+ * Tells the LLM about its identity, current conversation, and available targets.
+ */
+export async function buildCommunicationContext(
+  agentId: string,
+  source: string,
+  threadStore: ThreadStore,
+  availableAgents: string[],
+): Promise<string> {
+  const parsed = parseSource(source)
+  const otherAgents = availableAgents.filter((a) => a !== agentId)
+  const agentList = otherAgents.length > 0
+    ? otherAgents.map((a) => `agent:${a}`).join(', ')
+    : '(none)'
+
+  const lines: string[] = ['## Communication Context']
+
+  if (parsed.kind === 'external') {
+    lines.push(`- You are agent: ${agentId}`)
+
+    if (parsed.conversation_type === 'dm') {
+      lines.push(`- Conversation: dm with peer:${parsed.peer_id} (via ${parsed.channel_id})`)
+    } else {
+      lines.push(`- Conversation: ${parsed.conversation_type} ${parsed.conversation_id} (via ${parsed.channel_id})`)
+    }
+
+    lines.push(`- Current message from: peer:${parsed.peer_id}`)
+
+    // For group conversations, extract recent participants
+    if (parsed.conversation_type !== 'dm') {
+      try {
+        const events = await threadStore.peek({ lastEventId: 0, limit: 500 })
+        const participants = extractRecentParticipants(events)
+        if (participants.length > 0) {
+          lines.push(`- Recent participants: ${participants.join(', ')}`)
+        }
+      } catch {
+        // skip if thread peek fails
+      }
+    }
+
+    lines.push(`- Your text response will be streamed to peer:${parsed.peer_id}`)
+    lines.push(`- Available agents: ${agentList}`)
+    lines.push('- Use send_message tool for messages to other targets')
+  } else if (parsed.kind === 'internal') {
+    lines.push(`- You are agent: ${agentId}`)
+    lines.push(`- Message from: agent:${parsed.sender_agent_id} (conversation: ${parsed.conversation_id})`)
+    lines.push('- Your text response will NOT be auto-delivered — use send_message to reply')
+    lines.push(`- Available agents: ${agentList}`)
+    lines.push(`- Use send_message(target='agent:${parsed.sender_agent_id}', content='...') to reply`)
+  }
+
+  return lines.join('\n')
+}
+
+/**
  * Build LLM context from agent config, thread history, and memory.
  * threadId is required so we can load the per-thread memory summary.
  */
@@ -130,15 +204,17 @@ export async function buildContext(
   threadStore: ThreadStore,
   message: InboundMessage,
   threadId: string,
+  availableAgents?: string[],
 ): Promise<ChatInput> {
   const peerId = extractPeerId(message.source)
-  const [identity, memory, history] = await Promise.all([
+  const [identity, memory, history, commContext] = await Promise.all([
     loadIdentity(agentId),
     loadMemory(agentId, peerId, threadId),
     loadThreadHistory(threadStore),
+    buildCommunicationContext(agentId, message.source, threadStore, availableAgents ?? []),
   ])
 
-  const systemPrompt = [identity, memory].filter(Boolean).join('\n')
+  const systemPrompt = [identity, memory, commContext].filter(Boolean).join('\n')
 
   return {
     system: systemPrompt,

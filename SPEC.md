@@ -40,12 +40,13 @@ xar/
 │   │   └── pid.ts                # PID 文件管理
 │   ├── agent/
 │   │   ├── config.ts             # Agent 配置加载与校验
-│   │   ├── context.ts            # LLM context 构建（system prompt 组装）
+│   │   ├── context.ts            # LLM context 构建（system prompt + Communication Context）
 │   │   ├── deliver.ts            # 出站投递（通过 IPC → xgw）
 │   │   ├── memory.ts             # Session compact（对齐 agent repo compactor 逻辑）
 │   │   ├── queue.ts              # AsyncQueue<Message>（per-agent 内存消息队列）
 │   │   ├── router.ts             # 入站消息 → 目标 thread 分配
 │   │   ├── run-loop.ts           # 消息处理循环（per-agent async，持续运行）
+│   │   ├── send-message.ts       # send_message tool 实现（LLM 主动发送消息）
 │   │   ├── session.ts            # Session JSONL 读写、token 估算、compact state
 │   │   ├── thread-lib.ts         # thread lib 封装（open/init/exists）
 │   │   └── types.ts              # Agent 相关类型定义
@@ -303,37 +304,164 @@ async function processMessage(agentId: string, msg: InboundMessage) {
     content: msg.content,
   })
 
-  const target = buildOutboundTarget(msg.source)  // 从 source 解析出 channel_id, peer_id, conversation_id
-  const streamId = nextStreamId(target)            // <channel_id>:<conversation_id>:<seq>
-  const ctx = await buildContext(agentId, config, threadStore, msg, threadId)
-  const chunkWriter = new IpcChunkWriter(conn, streamId)
-  const deliver = new Deliver(conn, target)
+  const isInternal = parseSource(msg.source).kind === 'internal'
+  const target = buildOutboundTarget(msg.source)
+  const availableAgents = getRunningAgents()
+  const ctx = await buildContext(agentId, config, threadStore, msg, threadId, availableAgents)
 
-  await deliver.streamStart(streamId)
+  // 隐式出站：仅 external 消息创建 deliver 和 chunkWriter
+  let deliver: Deliver | null = null
+  let chunkWriter: IpcChunkWriter | null = null
+  let streamId: string
 
-  for await (const event of pai.chat(ctx.input, ctx.config, chunkWriter, tools, signal)) {
-    if (event.type === 'thinking_delta') {
-      // thinking 内容桥接到 xgw（xgw 可选择展示或忽略）
+  if (target && !isInternal) {
+    streamId = nextStreamId(target)
+    if (conn) {
+      deliver = new Deliver(conn, target)
+      chunkWriter = new IpcChunkWriter(conn, streamId)
+    }
+  } else {
+    streamId = `internal:${agentId}:${streamSeq++}`
+  }
+
+  // send_message tool 通过 extraTools 传入
+  const sendMessageTool = createSendMessageTool({
+    agentId, threadStore, ipcConn: conn, sendToAgent, convId, logger,
+    nextStreamSeq: () => ++streamSeq,
+  })
+
+  if (deliver) await deliver.streamStart(streamId)
+
+  for await (const event of pai.chat(ctx.input, ctx.config, chunkWriter, tools, signal, extraTools: [sendMessageTool])) {
+    if (event.type === 'thinking_delta' && deliver) {
       await deliver.streamThinking(streamId, event.delta)
     }
     if (event.type === 'chat_end') {
-      // pai Message[] → ThreadEventInput[]（回复写入 thread）
       await threadStore.pushBatch(event.newMessages.map(m => ({
         source: m.role === 'assistant' ? 'self' : `tool:${m.name ?? ''}`,
         type: 'record' as const,
         subtype: m.role === 'tool' ? 'toolcall' : undefined,
         content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
       })))
-      await memory.scheduleUpdate(agentId, threadStore, event)  // 异步触发 memory 更新
+      await memory.scheduleUpdate(agentId, threadStore, event)
     }
   }
-  await deliver.streamEnd(streamId)
+  if (deliver) await deliver.streamEnd(streamId)
+  // 注意：不再有 agent-to-agent auto-reply 代码
 }
 ```
 
 ### 3. Tool call 执行
 
 tool call（`bash_exec`）由 **pai lib 内部处理**，xar 不拦截。xar 在调用 `pai.chat()` 时传入 `createBashExecTool()`，具体执行逻辑保持在 pai 内部。
+
+#### send_message Tool
+
+`send_message` 是 xar 注册给 LLM 的内置 tool，与 `bash_exec` 并列，使 agent 能主动向任意 peer（人类）或其他 agent 发送消息。通过 `extraTools` 参数传入 `processTurn`。
+
+**Tool Schema**：
+
+```json
+{
+  "name": "send_message",
+  "description": "Send a message to a peer or agent outside the normal streaming reply. ...",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "target": {
+        "type": "string",
+        "description": "Target address: \"peer:<peer_id>\" for humans, \"agent:<agent_id>\" for agents."
+      },
+      "content": {
+        "type": "string",
+        "description": "Message content."
+      }
+    },
+    "required": ["target", "content"]
+  }
+}
+```
+
+**Target 格式**：
+
+| 格式 | 说明 | 示例 |
+|------|------|------|
+| `peer:<peer_id>` | 向人类 peer 发送消息 | `peer:alice` |
+| `agent:<agent_id>` | 向其他 agent 发送消息 | `agent:warden` |
+
+**执行流程 — peer 投递**（`target=peer:<peer_id>`）：
+
+1. 扫描当前 thread events（`threadStore.peek`），从后往前查找该 `peer_id` 最近的 external source 地址
+2. 从 source 解析出 `OutboundTarget`（`channel_id`、`peer_id`、`conversation_id`）
+3. 生成 `stream_id`（格式 `<channel_id>:<conversation_id>:<seq>`）
+4. 通过 IPC streaming 协议投递：`stream_start` → `stream_token(content)` → `stream_end`
+5. 写入 thread record：`{ source: 'self', type: 'record', subtype: 'message', content: JSON.stringify({ target, content }) }`
+6. 返回 `{ status: 'delivered', target }`
+
+**执行流程 — agent 投递**（`target=agent:<agent_id>`）：
+
+1. 构造 internal source 地址：`internal:agent:<conv_id>:<self_agent_id>`
+2. 调用 `sendToAgent(targetAgentId, { source, content })`
+3. 写入 thread record（同上）
+4. 返回 `{ status: 'delivered', target }`
+
+**错误处理**：所有错误通过返回值传递给 LLM，不抛异常。
+
+| 场景 | 返回值 |
+|------|--------|
+| target 格式无效 | `{ status: 'error', message: 'invalid target format' }` |
+| peer 在 thread 中找不到 | `{ status: 'error', message: 'peer not found in thread context' }` |
+| 目标 agent 未运行 | `{ status: 'error', message: 'agent not running' }` |
+| IPC 连接不可用 | `{ status: 'error', message: 'no IPC connection available' }` |
+
+#### Communication Context 注入
+
+每次 LLM 调用时，`buildContext` 在 system prompt 末尾追加一段 Communication Context，告知 LLM 当前通信环境和可用目标。内容根据入站消息的 source 类型动态生成。
+
+**数据来源**：
+
+| 信息 | 来源 |
+|------|------|
+| agent_id | 当前 agent 配置 |
+| 会话类型/peer_id | `parseSource(source)` |
+| recent participants | `threadStore.peek()` 提取 distinct external peer_id |
+| available agents | daemon `getRunningAgents()` 回调 |
+
+**External DM 示例**：
+
+```markdown
+## Communication Context
+- You are agent: admin
+- Conversation: dm with peer:alice (via telegram:main)
+- Current message from: peer:alice
+- Your text response will be streamed to peer:alice
+- Available agents: agent:warden, agent:maintainer
+- Use send_message tool for messages to other targets
+```
+
+**External Group 示例**：
+
+```markdown
+## Communication Context
+- You are agent: admin
+- Conversation: group conv123 (via telegram:main)
+- Current message from: peer:alice
+- Recent participants: alice, bob, charlie
+- Your text response will be streamed to peer:alice
+- Available agents: agent:warden, agent:maintainer
+- Use send_message tool for messages to other targets
+```
+
+**Internal 示例**（来自其他 agent）：
+
+```markdown
+## Communication Context
+- You are agent: warden
+- Message from: agent:admin (conversation: conv123)
+- Your text response will NOT be auto-delivered — use send_message to reply
+- Available agents: agent:admin, agent:maintainer
+- Use send_message(target='agent:admin', content='...') to reply
+```
 
 ### 4. Memory 管理（Session Compact）
 
@@ -350,15 +478,37 @@ compact 失败不影响主流程（non-fatal，记录 warn 日志）。
 
 此逻辑对齐 `agent` repo 的 `runner/compactor.ts`，使用相同的 token 估算和分割算法。
 
-### 5. 出站投递
+### 5. 出站投递（双出站模型）
 
-xar 通过 IPC 直接 push streaming token 给 xgw，不经过 `xgw send` CLI：
+xar 有两条出站路径：
+
+**路径 1：隐式 streaming（external 消息默认行为）**
+
+当入站消息来自 external source（人类 peer）时，LLM text response 自动 stream 给当前 peer：
 
 ```
 run-loop → IpcChunkWriter.write(token) → IPC stream_token(stream_id, token) → xgw → channel → peer
 ```
 
 `IpcChunkWriter` 构造时接收 `stream_id`，`write()` 方法将 token 封装为 `stream_token` IPC 消息发送。
+
+当入站消息来自 internal source（其他 agent）时，**不创建** Deliver 和 IpcChunkWriter，LLM text response 仅写入 thread 作为 record 事件，不发送到 xgw。LLM 需要通过 `send_message` tool 显式选择回复目标。
+
+**路径 2：显式 send_message（LLM 主动调用）**
+
+LLM 通过调用 `send_message(target, content)` tool 向指定 target 发送消息。对 peer 投递走标准 IPC streaming 协议（`stream_start` → `stream_token` → `stream_end`），xgw 无法区分这是 send_message 还是隐式 streaming。对 agent 投递通过 daemon 的 `sendToAgent` 回调直接入队。
+
+### 6. Agent 间通信
+
+Agent 间通过 internal message 通信。source 地址格式为 `internal:agent:<conv_id>:<sender_agent_id>`。
+
+**交互模式**：LLM 通过 `send_message` tool 显式控制回复行为。当 agent 收到来自其他 agent 的 internal 消息时：
+
+1. 入站消息写入 thread
+2. LLM 处理消息，text response 写入 thread（不自动投递）
+3. LLM 根据需要调用 `send_message(target='agent:<sender_agent_id>', content='...')` 回复
+
+不存在自动回复机制——agent 间的每次消息发送都是 LLM 的显式决策。Communication Context 会提示 LLM 使用 `send_message` 回复。
 
 ---
 

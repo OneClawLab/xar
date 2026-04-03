@@ -18,6 +18,7 @@ import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
 import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
 import { processTurn } from './turn.js'
+import { createSendMessageTool } from './send-message.js'
 import { getDaemonConfig } from '../config.js'
 import { join } from 'path'
 
@@ -51,6 +52,7 @@ export class RunLoopImpl implements RunLoop {
      * full agent registry.
      */
     private sendToAgent?: (agentId: string, message: InboundMessage) => boolean,
+    private getRunningAgents?: () => string[],
   ) {
     this.logger = logger ?? {
       info: () => {},
@@ -164,7 +166,8 @@ export class RunLoopImpl implements RunLoop {
       const sessionFile = join(agentDir, 'sessions', `${threadId}.jsonl`)
 
       // Build LLM context
-      const chatInput = await buildContext(this.agentId, config, threadStore, msg, threadId)
+      const availableAgents = this.getRunningAgents?.() ?? []
+      const chatInput = await buildContext(this.agentId, config, threadStore, msg, threadId, availableAgents)
       this.logger.debug('LLM context built')
 
       const conn = this.getConn()
@@ -175,23 +178,34 @@ export class RunLoopImpl implements RunLoop {
       this.logger.debug(`Using IPC connection: ${conn?.id ?? 'none'}`)
 
       // Build stream_id and delivery objects
-      if (target) {
+      // Internal messages: suppress Deliver and IpcChunkWriter (no implicit outbound streaming)
+      // LLM response still gets written to thread below.
+      if (target && !isInternal) {
         streamId = this.nextStreamId(target)
         if (conn) {
           deliver = new Deliver(conn, target)
         }
       } else {
-        // Internal message — generate a placeholder stream_id for logging
         streamId = `internal:${this.agentId}:${this.streamSeq++}`
       }
 
-      const chunkWriter = conn ? new IpcChunkWriter(conn, streamId) : null
+      const chunkWriter = (conn && !isInternal) ? new IpcChunkWriter(conn, streamId) : null
 
       const convId = extractConvId(msg.source)
       const extraEnv: Record<string, string> = {
         XAR_AGENT_ID: this.agentId,
         XAR_CONV_ID: convId,
       }
+
+      const sendMessageTool = createSendMessageTool({
+        agentId: this.agentId,
+        threadStore,
+        ipcConn: conn,
+        sendToAgent: this.sendToAgent,
+        convId,
+        logger: this.logger,
+        nextStreamSeq: () => ++this.streamSeq,
+      })
 
       const result = await processTurn({
         chatInput,
@@ -208,6 +222,7 @@ export class RunLoopImpl implements RunLoop {
         maxAttempts: config.retry.max_attempts,
         logger: this.logger,
         extraEnv,
+        extraTools: [sendMessageTool],
         callbacks: {
           onCompactStart: (reason) => deliver?.streamCompactStart(streamId, reason),
           onCompactEnd: (before, after) => deliver?.streamCompactEnd(streamId, before, after),
@@ -238,36 +253,6 @@ export class RunLoopImpl implements RunLoop {
       })
       await threadStore.pushBatch(threadEvents)
       this.logger.info(`Message processed successfully: stream=${streamId} records=${threadEvents.length}`)
-
-      // ── Agent-to-agent auto-reply ─────────────────────────────────────────
-      // When this agent processed an internal message (from another agent),
-      // automatically deliver the assistant reply back to the sender.
-      // This is the core of the agent-to-agent interaction model: the worker
-      // processes the message exactly like any other message, and the reply
-      // is routed back transparently — no special handling needed in the worker.
-      const parsedSource = parseSource(msg.source)
-      if (parsedSource.kind === 'internal' && parsedSource.sender_agent_id && this.sendToAgent) {
-        const senderAgentId = parsedSource.sender_agent_id
-        // Extract the assistant reply text (first assistant message)
-        const assistantMsg = result.newMessages.find((m: any) => m.role === 'assistant')
-        if (assistantMsg) {
-          const replyContent = typeof assistantMsg.content === 'string'
-            ? assistantMsg.content
-            : JSON.stringify(assistantMsg.content)
-          // Build reply source: internal message from this agent back to sender
-          // conv_id is preserved so the sender routes it to the same thread
-          const replySource = `internal:agent:${convId}:${this.agentId}`
-          const delivered = this.sendToAgent(senderAgentId, {
-            source: replySource,
-            content: replyContent,
-          })
-          if (delivered) {
-            this.logger.info(`Auto-reply sent to agent ${senderAgentId}: source=${replySource}`)
-          } else {
-            this.logger.warn(`Auto-reply to agent ${senderAgentId} dropped: agent not running`)
-          }
-        }
-      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       this.logger.error(`Message processing failed: ${errorMsg}`)
