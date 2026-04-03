@@ -14,7 +14,7 @@ set -uo pipefail
 source "$(dirname "$0")/scripts/e2e-lib.sh"
 
 XAR="xar"
-AID="e2e-test-$"
+AID="e2e-test-$$"
 AGENT_DIR="${THECLAW_HOME:-$HOME/.theclaw}/agents/$AID"
 
 on_cleanup() {
@@ -158,9 +158,9 @@ assert_contains "stopped"
 # 15. Error — operations on non-existent agent exit 1
 # ══════════════════════════════════════════════════════════════
 section "15. Error — operations on non-existent agent"
-run_cmd $XAR start "no-such-agent-$"; assert_exit 1
-run_cmd $XAR stop  "no-such-agent-$"; assert_exit 1
-run_cmd $XAR status "no-such-agent-$"; assert_exit 1
+run_cmd $XAR start "no-such-agent-$$"; assert_exit 1
+run_cmd $XAR stop  "no-such-agent-$$"; assert_exit 1
+run_cmd $XAR status "no-such-agent-$$"; assert_exit 1
 
 # ══════════════════════════════════════════════════════════════
 # 16. daemon stop
@@ -203,7 +203,7 @@ wait_for "agent received ping" 15 \
 pass "message delivered and processed"
 
 section "15b. xar send — non-existent agent exits 1"
-run_cmd $XAR send "no-such-agent-$" "hello" --source external:cli:main:dm:e2e:e2e-user
+run_cmd $XAR send "no-such-agent-$$" "hello" --source external:cli:main:dm:e2e:e2e-user
 assert_exit 1
 
 section "15b. xar send — stop agent"
@@ -283,7 +283,7 @@ sleep 1
 # Key: both agents use send_message tool explicitly (no auto-reply).
 # IDENTITY.md prompts guide each agent's behavior.
 
-AID_B="e2e-worker-$"
+AID_B="e2e-worker-$$"
 AGENT_B_DIR="${THECLAW_HOME:-$HOME/.theclaw}/agents/$AID_B"
 
 section "15d. a2a — restart daemon for clean IPC connections"
@@ -296,45 +296,22 @@ run_cmd $XAR init "$AID_B"
 assert_exit0
 assert_file_exists "$AGENT_B_DIR/config.json" "worker config"
 
-# Write worker IDENTITY: instructs it to use send_message to reply
+# Write worker IDENTITY: explicit send_message instruction with exact syntax
 cat >"$AGENT_B_DIR/IDENTITY.md" <<'WORKER_ID_EOF'
 # Worker Agent
 
-You are a worker agent in a multi-agent system.
-You remember facts told to you and answer questions about them.
+You are a worker agent. You remember facts and answer questions.
 
-IMPORTANT: When you receive a message from another agent (internal message),
-your text response is NOT automatically delivered. You MUST use the
-send_message tool to reply. Check the Communication Context for the sender.
+CRITICAL RULE: When you receive a message from another agent, your text
+response is NOT delivered anywhere. The only way to reply is to call the
+send_message tool. You MUST always call send_message to reply.
 
-When asked a question by another agent, use send_message to send your answer back.
+When asked a question by agent:SENDER, you MUST call:
+  send_message(target="agent:SENDER", content="<your answer>")
+
+Replace SENDER with the actual sender agent id shown in Communication Context.
+Do NOT just write a text response — it will be lost. Always use send_message.
 WORKER_ID_EOF
-
-section "15d. a2a — start worker"
-run_cmd $XAR start "$AID_B"
-assert_exit0
-sleep 2
-
-section "15d. a2a — prime worker with secret number 8754"
-# Send via internal source (as if orchestrator sent it) so worker stores it
-# in the orchestrator's per-peer thread.
-A2A_CONV_ID="a2a-conv-$"
-WORKER_PRIME_SOURCE="internal:agent:${A2A_CONV_ID}:${AID}"
-WORKER_ORCH_SESS="${AGENT_B_DIR}/sessions/peers/${AID}.jsonl"
-
-run_cmd $XAR send "$AID_B" \
-  "Please remember this number: 8754. Just confirm you stored it. Use send_message(target='agent:${AID}', content='Stored 8754') to confirm." \
-  --source "$WORKER_PRIME_SOURCE"
-assert_exit0
-assert_contains "delivered"
-
-wait_for "worker stored 8754" 60 \
-  "grep -q 'assistant' \"$WORKER_ORCH_SESS\" 2>/dev/null" \
-  -- "tail -10 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID_B}.log 2>/dev/null || echo 'no worker log'"
-
-run_cmd cat "$WORKER_ORCH_SESS"
-assert_exit0
-assert_contains "8754"
 
 section "15d. a2a — write orchestrator identity for delegation"
 ORCH_IDENTITY="$AGENT_DIR/IDENTITY.md"
@@ -354,18 +331,52 @@ When you receive a reply from another agent (internal message):
 Available worker: agent:${AID_B}
 ORCH_ID_EOF
 
-section "15d. a2a — start orchestrator"
+section "15d. a2a — start both agents"
+# Start orchestrator FIRST so worker can send_message back during prime
 run_cmd $XAR start "$AID"
 assert_exit0
+sleep 1
+run_cmd $XAR start "$AID_B"
+assert_exit0
 sleep 2
+
+section "15d. a2a — prime worker with secret number 8754"
+# Prime via internal source from orchestrator — both agents are running now,
+# so worker's send_message confirmation back to orchestrator will succeed.
+# This ensures 8754 is in the same thread (peers/orchestrator) that the
+# delegated question will also land in.
+A2A_CONV_ID="a2a-conv-$$"
+WORKER_PRIME_SOURCE="internal:agent:${A2A_CONV_ID}:${AID}"
+WORKER_ORCH_SESS="${AGENT_B_DIR}/sessions/peers/${AID}.jsonl"
+
+run_cmd $XAR send "$AID_B" \
+  "Remember this number: 8754. Use send_message(target='agent:${AID}', content='Stored 8754') to confirm." \
+  --source "$WORKER_PRIME_SOURCE"
+assert_exit0
+assert_contains "delivered"
+
+# Worker processes internal message and sends confirmation back to orchestrator
+wait_for "worker processed prime" 60 \
+  "grep -q 'assistant' \"$WORKER_ORCH_SESS\" 2>/dev/null" \
+  -- "tail -10 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID_B}.log 2>/dev/null || echo 'no worker log'"
+
+# Verify worker session has 8754 in context
+run_cmd cat "$WORKER_ORCH_SESS"
+assert_exit0
+assert_contains "8754"
+
+# Wait for orchestrator to receive the prime confirmation (so its queue is clear)
+ORCH_WORKER_SESS="${AGENT_DIR}/sessions/peers/${AID_B}.jsonl"
+wait_for "orchestrator received prime confirmation" 30 \
+  'test -s "$ORCH_WORKER_SESS" 2>/dev/null' \
+  -- "tail -10 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID}.log 2>/dev/null || echo 'no orch log'"
 
 section "15d. a2a — human asks orchestrator to get the number from worker"
 A2A_SOURCE="external:cli:main:dm:${A2A_CONV_ID}:e2e-user"
 ORCH_USER_SESS="${AGENT_DIR}/sessions/peers/e2e-user.jsonl"
-ORCH_WORKER_SESS="${AGENT_DIR}/sessions/peers/${AID_B}.jsonl"
 
 run_cmd $XAR send "$AID" \
-  "Ask agent:${AID_B} what number it stored. Use send_message to ask it. Then tell me the answer." \
+  "Call send_message(target='agent:${AID_B}', content='What number did you store? Reply with just the number using send_message(target=agent:${AID}, content=<number>).') to ask the worker. Then tell me what it said." \
   --source "$A2A_SOURCE"
 assert_exit0
 assert_contains "delivered"
@@ -385,9 +396,8 @@ assert_contains "assistant"
 section "15d. a2a — wait for worker to receive delegated question and reply"
 # Worker receives internal message from orchestrator, processes it,
 # and uses send_message to reply back with 8754.
-# We check for at least 2 assistant entries (prime + delegation).
 wait_for "worker processed delegated question" 90 \
-  "grep -c 'assistant' \"$WORKER_ORCH_SESS\" 2>/dev/null | grep -q '[2-9]'" \
+  "grep -q '8754' \"$WORKER_ORCH_SESS\" 2>/dev/null" \
   -- "tail -20 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID_B}.log 2>/dev/null || echo 'no worker log'"
 
 section "15d. a2a — verify worker session contains 8754"
