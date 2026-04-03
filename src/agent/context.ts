@@ -188,7 +188,7 @@ export async function buildCommunicationContext(
     lines.push(`- Message from: agent:${parsed.sender_agent_id} (conversation: ${parsed.conversation_id})`)
     lines.push('- Your text response will NOT be auto-delivered — use send_message to reply')
     lines.push(`- Available agents: ${agentList}`)
-    lines.push(`- Use send_message(target='agent:${parsed.sender_agent_id}', content='...') to reply back to the sender`)
+    lines.push(`- REQUIRED: call send_message(target='agent:${parsed.sender_agent_id}', content='...') to return your result — do NOT just write a text response`)
 
     // The conversation_id is the original peer_id — scan that peer's thread to find
     // the external channel info so the agent can deliver results directly if needed.
