@@ -106,7 +106,12 @@ export class RunLoopImpl implements RunLoop {
   }
 
   private getConn(): IpcConnection | undefined {
-    return Array.from(this.ipcConnections.values())[0]
+    // Only return connections that are still open — avoids using a stale
+    // WebSocket that was closed after the xar send command disconnected.
+    for (const conn of this.ipcConnections.values()) {
+      if (conn.isOpen()) return conn
+    }
+    return undefined
   }
 
   /**
@@ -179,8 +184,13 @@ export class RunLoopImpl implements RunLoop {
       const chatInput = await buildContext(this.agentId, config, threadStore, msg, threadId, availableAgents)
       this.logger.debug('LLM context built')
 
-      const conn = this.getConn()
       const isInternal = parseSource(msg.source).kind === 'internal'
+
+      // Resolve conn lazily — right before we need it — so we get the
+      // connection state *after* all the async work above (config load,
+      // routing, context build).  An earlier getConn() call could return
+      // a connection that was already closed by the time we reach here.
+      const conn = this.getConn()
       if (!conn && !isInternal) {
         this.logger.warn(`No IPC connection available for streaming (active connections: ${this.ipcConnections.size}), processing without streaming`)
       }

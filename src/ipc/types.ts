@@ -8,6 +8,7 @@ export interface IpcConnection {
   id: string
   send(message: IpcMessage): Promise<void>
   close(): void
+  isOpen(): boolean
 }
 
 export interface IpcServerConfig {

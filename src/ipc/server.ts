@@ -12,6 +12,10 @@ class WebSocketConnection implements IpcConnection {
     private ws: WebSocket,
   ) {}
 
+  isOpen(): boolean {
+    return this.ws.readyState === WebSocket.OPEN
+  }
+
   async send(message: IpcMessage): Promise<void> {
     return new Promise((resolve, reject) => {
       this.ws.send(JSON.stringify(message), (err) => {
