@@ -21,37 +21,5 @@ export interface AgentConfig {
   }
 }
 
-export interface ThreadEvent {
-  id: number
-  source: string
-  type: 'message' | 'record'
-  subtype?: string
-  content: string
-  timestamp: number
-}
-
-export interface ThreadEventInput {
-  source: string
-  type: 'message' | 'record'
-  subtype?: string
-  content: string
-}
-
-export interface PeekOptions {
-  lastEventId: number
-  limit?: number
-  filter?: string
-}
-
-export interface ThreadStore {
-  push(event: ThreadEventInput): Promise<ThreadEvent>
-  pushBatch(events: ThreadEventInput[]): Promise<ThreadEvent[]>
-  peek(opts: PeekOptions): Promise<ThreadEvent[]>
-}
-
-export interface ThreadLib {
-  open(threadPath: string): Promise<ThreadStore>
-  init(threadPath: string): Promise<ThreadStore>
-  exists(threadPath: string): Promise<boolean>
-  destroy(threadPath: string): Promise<void>
-}
+// Thread types are imported from the 'thread' package — do not duplicate here.
+// See: thread/src/lib/types.ts for ThreadEvent, ThreadEventInput, PeekOptions, ThreadStore.

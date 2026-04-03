@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest'
 import fc from 'fast-check'
 import { splitTarget, findPeerSource, createSendMessageTool } from '../../src/agent/send-message.js'
-import type { ThreadEvent } from '../../src/agent/types.js'
+import type { ThreadEvent } from 'thread'
 import type { SendMessageDeps } from '../../src/agent/send-message.js'
 import type { IpcConnection } from '../../src/ipc/types.js'
 import type { IpcMessage } from '../../src/types.js'
@@ -54,13 +54,13 @@ function threadEventArb(sourceArb: fc.Arbitrary<string>): fc.Arbitrary<ThreadEve
     sourceArb,
     fc.constantFrom('message' as const, 'record' as const),
     fc.string({ minLength: 0, maxLength: 50 }),
-    fc.nat({ max: 2000000000 }),
-  ).map(([id, source, type, content, timestamp]) => ({
+  ).map(([id, source, type, content]) => ({
     id,
     source,
     type,
+    subtype: null,
     content,
-    timestamp,
+    created_at: new Date().toISOString(),
   }))
 }
 
@@ -105,8 +105,9 @@ describe('send_message Property Tests', () => {
                 id: 10000 + i,
                 source: src,
                 type: 'message',
+                subtype: null,
                 content: `msg-${i}`,
-                timestamp: Date.now() + i,
+                created_at: new Date().toISOString(),
               })
             }
 
@@ -141,4 +142,10 @@ describe('send_message Property Tests', () => {
             // No external sources at all → should return undefined
             const result = findPeerSource(events, targetPeerId)
             expect(result).toBeUndefined()
-         
+          },
+        ),
+        { numRuns: 100 },
+      )
+    })
+  })
+})

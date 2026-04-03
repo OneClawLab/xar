@@ -152,12 +152,21 @@ export class RunLoopImpl implements RunLoop {
       const threadId = determineThreadId(config, msg.source)
       this.logger.info(`Message routed: thread=${threadId}`)
 
+      // Determine event type: 'record' messages are context-only (no LLM trigger)
+      const eventType = msg.event_type ?? 'message'
+
       // Write inbound message to thread
       await threadStore.push({
         source: msg.source,
-        type: 'message',
+        type: eventType,
         content: msg.content,
       })
+
+      // Record-only messages: store in thread for context but skip LLM processing
+      if (eventType === 'record') {
+        this.logger.info(`Record-only message stored (no LLM): thread=${threadId} source=${msg.source}`)
+        return
+      }
 
       // Load pai config and resolve provider for context window info
       const providerInfo = await this.pai.getProviderInfo(config.pai.provider)
