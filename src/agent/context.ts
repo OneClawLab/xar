@@ -188,7 +188,30 @@ export async function buildCommunicationContext(
     lines.push(`- Message from: agent:${parsed.sender_agent_id} (conversation: ${parsed.conversation_id})`)
     lines.push('- Your text response will NOT be auto-delivered — use send_message to reply')
     lines.push(`- Available agents: ${agentList}`)
-    lines.push(`- Use send_message(target='agent:${parsed.sender_agent_id}', content='...') to reply`)
+    lines.push(`- Use send_message(target='agent:${parsed.sender_agent_id}', content='...') to reply back to the sender`)
+
+    // The conversation_id is the original peer_id — scan that peer's thread to find
+    // the external channel info so the agent can deliver results directly if needed.
+    const convId = parsed.conversation_id
+    if (convId) {
+      try {
+        const { openOrCreateThread } = await import('./thread-lib.js')
+        const peerThread = await openOrCreateThread(agentId, `peers/${convId}`)
+        const events = await peerThread.peek({ lastEventId: 0, limit: 200 })
+        for (let i = events.length - 1; i >= 0; i--) {
+          const ev = events[i]!
+          if (!ev.source.startsWith('external:')) continue
+          try {
+            const p = parseSource(ev.source)
+            if (p.peer_id && p.channel_id) {
+              lines.push(`- Original peer: peer:${p.peer_id} (via ${p.channel_id})`)
+              lines.push(`- Use send_message(target='peer:${p.peer_id}', content='...') to deliver results to them`)
+              break
+            }
+          } catch { /* skip */ }
+        }
+      } catch { /* skip if thread doesn't exist */ }
+    }
   }
 
   return lines.join('\n')
