@@ -36,6 +36,7 @@ export class Daemon {
   private logger: Logger | null = null
   private foreground = false
   private pai: Pai | null = null
+  private shuttingDown = false
 
   async start(foreground = false): Promise<void> {
     this.foreground = foreground
@@ -206,6 +207,8 @@ export class Daemon {
   }
 
   private async gracefulShutdown(): Promise<void> {
+    if (this.shuttingDown) return
+    this.shuttingDown = true
     this.logger?.info('Daemon shutting down gracefully...')
 
     const stopPromises = Array.from(this.agents.keys()).map((id) => this.stopAgent(id))
