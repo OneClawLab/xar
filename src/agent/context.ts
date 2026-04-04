@@ -184,34 +184,13 @@ export async function buildCommunicationContext(
     lines.push(`- Available agents: ${agentList}`)
     lines.push('- Use send_message tool for messages to other targets')
   } else if (parsed.kind === 'internal') {
+    // Worker context: clear, focused, no confusion about delivery
     lines.push(`- You are agent: ${agentId}`)
-    lines.push(`- Message from: agent:${parsed.sender_agent_id} (conversation: ${parsed.conversation_id})`)
-    lines.push('- Your text response will NOT be auto-delivered — use send_message to reply')
+    lines.push(`- Message from: agent:${parsed.sender_agent_id}`)
+    lines.push('- Your text response will be automatically reported back to the sender agent.')
+    lines.push('- Do NOT use send_message to contact external peers.')
+    lines.push('- Focus only on completing the assigned task and returning your result as plain text.')
     lines.push(`- Available agents: ${agentList}`)
-    lines.push(`- REQUIRED: call send_message(target='agent:${parsed.sender_agent_id}', content='...') to return your result — do NOT just write a text response`)
-
-    // The conversation_id is the original peer_id — scan that peer's thread to find
-    // the external channel info so the agent can deliver results directly if needed.
-    const convId = parsed.conversation_id
-    if (convId) {
-      try {
-        const { openOrCreateThread } = await import('./thread-lib.js')
-        const peerThread = await openOrCreateThread(agentId, `peers/${convId}`)
-        const events = await peerThread.peek({ lastEventId: 0, limit: 200 })
-        for (let i = events.length - 1; i >= 0; i--) {
-          const ev = events[i]!
-          if (!ev.source.startsWith('external:')) continue
-          try {
-            const p = parseSource(ev.source)
-            if (p.peer_id && p.channel_id) {
-              lines.push(`- Original peer: peer:${p.peer_id} (via ${p.channel_id})`)
-              lines.push(`- Use send_message(target='peer:${p.peer_id}', content='...') to deliver results to them`)
-              break
-            }
-          } catch { /* skip */ }
-        }
-      } catch { /* skip if thread doesn't exist */ }
-    }
   }
 
   return lines.join('\n')
@@ -237,7 +216,10 @@ export async function buildContext(
     buildCommunicationContext(agentId, message.source, threadStore, availableAgents ?? []),
   ])
 
-  const systemPrompt = [identity, memory, commContext].filter(Boolean).join('\n')
+  // task_context is injected by the orchestrator when dispatching a task via
+  // send_message(target='agent:...'). It describes the worker's role and constraints.
+  const parts = [identity, memory, commContext, message.task_context ?? ''].filter(Boolean)
+  const systemPrompt = parts.join('\n\n')
 
   return {
     system: systemPrompt,

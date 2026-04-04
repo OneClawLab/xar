@@ -32,7 +32,6 @@ class WebSocketConnection implements IpcConnection {
 
 export class IpcServerImpl implements IpcServer {
   private wss: WebSocketServer | null = null
-  private netServer: any = null
   private connections: Map<string, IpcConnection> = new Map()
   private messageHandlers: ((message: IpcMessage, connId: string) => Promise<void>)[] = []
   private connectionHandlers: ((conn: IpcConnection, connId: string) => void)[] = []

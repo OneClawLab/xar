@@ -20,6 +20,9 @@ export interface SendMessageDeps {
   ipcConn: IpcConnection | undefined
   sendToAgent: ((agentId: string, message: InboundMessage) => boolean) | undefined
   convId: string
+  /** OutboundTarget of the current inbound message's peer, if external.
+   *  Passed to deliverToAgent so the worker can auto-announce back to the peer. */
+  currentPeerTarget: OutboundTarget | undefined
   logger: Logger
   /** Per-agent stream sequence counter, shared with run-loop */
   nextStreamSeq: () => number
@@ -41,6 +44,7 @@ export function splitTarget(target: string): [string, string] {
 /**
  * Scan thread events from end to find the most recent external source
  * that contains the given peerId.
+ * Scans from the tail (most recent) so long threads don't miss recent events.
  */
 export function findPeerSource(events: ThreadEvent[], peerId: string): string | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
@@ -66,10 +70,10 @@ async function deliverToPeer(
 ): Promise<{ status: string; target?: string; message?: string }> {
   const { threadStore, ipcConn, logger, nextStreamSeq } = deps
 
-  // 1. Scan thread for peer's external source
+  // 1. Scan thread for peer's external source — scan from tail for recency
   let events: ThreadEvent[]
   try {
-    events = await threadStore.peek({ lastEventId: 0, limit: 500 })
+    events = await threadStore.peek({ lastEventId: 0, limit: 2000 })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`Failed to peek thread events: ${msg}`)
@@ -134,6 +138,7 @@ async function deliverToAgent(
   deps: SendMessageDeps,
   agentId: string,
   content: string,
+  replyToPeer?: OutboundTarget,
 ): Promise<{ status: string; target?: string; message?: string }> {
   const { agentId: selfAgentId, convId, sendToAgent, threadStore, logger } = deps
 
@@ -145,13 +150,28 @@ async function deliverToAgent(
   const source = `internal:agent:${convId}:${selfAgentId}`
   const targetStr = `agent:${agentId}`
 
-  // 2. Send to agent
-  const delivered = sendToAgent(agentId, { source, content })
+  // 2. Build task context injected into the worker's system prompt
+  const taskContext = [
+    '[Task Assignment]',
+    `You are handling a delegated task from agent:${selfAgentId}.`,
+    'Complete the task and return your result as plain text.',
+    'Do NOT use send_message to contact external peers — the framework will deliver your result automatically.',
+    'Do NOT pretend to be the orchestrator.',
+    'Your text response will be automatically reported back to the orchestrator.',
+  ].join('\n')
+
+  // 3. Send to agent — include reply_to_peer so the run-loop can auto-announce
+  const delivered = sendToAgent(agentId, {
+    source,
+    content,
+    task_context: taskContext,
+    ...(replyToPeer !== undefined ? { reply_to_peer: replyToPeer } : {}),
+  })
   if (!delivered) {
     return { status: 'error', message: 'agent not running' }
   }
 
-  // 3. Write thread record
+  // 4. Write thread record
   try {
     await threadStore.push({
       source: 'self',
@@ -176,9 +196,11 @@ Use this when you need to:
 - Send a message to a different target than the current conversation peer
 - Send an intermediate notification before your main reply
 - Dispatch a task to another agent
-- Reply to an agent that delegated a task to you
+- Send progress updates during a long task
 Your normal text response is automatically streamed to the current peer —
-you don't need send_message for that.`,
+you don't need send_message for that.
+When dispatching to an agent, your result will be automatically reported back
+to you — the worker does not need to call send_message to reply.`,
     parameters: {
       type: 'object',
       properties: {
@@ -201,6 +223,10 @@ you don't need send_message for that.`,
         case 'peer':
           return await deliverToPeer(deps, id, content)
         case 'agent':
+          // reply_to_peer is intentionally NOT passed here — workers should not
+          // directly deliver to the peer by default. The orchestrator synthesizes
+          // results and delivers them. Use send_message(target='peer:...') for
+          // explicit progress notifications instead.
           return await deliverToAgent(deps, id, content)
         default:
           return { status: 'error', message: 'invalid target format' }

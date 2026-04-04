@@ -128,7 +128,11 @@ describe('createInitCommand', () => {
     const identity = await fs.readFile(join(agentDir, 'IDENTITY.md'), 'utf-8')
     const usage = await fs.readFile(join(agentDir, 'USAGE.md'), 'utf-8')
 
-    expect(identity).toContain('agent3')
+    // IDENTITY.md is a generic template — agent id is injected at runtime via
+    // buildCommunicationContext(), not hardcoded into the file.
+    expect(identity.length).toBeGreaterThan(0)
+    expect(identity).toContain('Role')
+    // USAGE.md is agent-specific and contains the id
     expect(usage).toContain('agent3')
   })
 })

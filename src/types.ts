@@ -12,6 +12,22 @@ export interface InboundMessage {
   /** Event type for thread storage: 'message' triggers LLM, 'record' is context-only.
    *  Determined by xgw mention gating. Defaults to 'message' if omitted. */
   event_type?: 'message' | 'record'
+  /**
+   * Push-based completion: when set, the run-loop automatically delivers the
+   * worker's LLM text response back to this peer after the turn completes,
+   * without requiring the worker LLM to call send_message explicitly.
+   *
+   * Set by the orchestrator when dispatching a task via send_message(target='agent:...').
+   * The worker LLM only needs to produce a plain text response — the framework
+   * handles delivery back to both the orchestrator and the original peer.
+   */
+  reply_to_peer?: OutboundTarget
+  /**
+   * Task context injected into the worker's system prompt.
+   * Describes the worker's role and constraints for this specific task.
+   * Set by the orchestrator when dispatching via send_message(target='agent:...').
+   */
+  task_context?: string
 }
 
 /**
