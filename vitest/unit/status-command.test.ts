@@ -28,7 +28,7 @@ describe('createStatusCommand', () => {
 
   async function getCmd() {
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 18792, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 28213, logLevel: 'info' }),
     }))
     vi.doMock('../../src/daemon/pid.js', () => ({
       checkDaemonRunning: async () => false,

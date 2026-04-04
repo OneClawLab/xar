@@ -3,7 +3,7 @@ import { join } from 'path'
 import { getThreadLib, getAgentInboxPath, getThreadPath } from '../../src/agent/thread-lib.js'
 
 vi.mock('../../src/config.js', () => ({
-  getDaemonConfig: vi.fn(() => ({ theClawHome: '/tmp/theclaw-test', daemonPort: 18792, logLevel: 'info' })),
+  getDaemonConfig: vi.fn(() => ({ theClawHome: '/tmp/theclaw-test', daemonPort: 28213, logLevel: 'info' })),
 }))
 
 // Mock the 'thread' package — we only test the wrapper logic here

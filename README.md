@@ -142,7 +142,7 @@ Agent configuration is stored in `~/.theclaw/agents/<id>/config.json`:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `THECLAW_HOME` | TheClaw data root directory | `~/.theclaw` |
-| `XAR_IPC_PORT` | TCP port for IPC | `18792` |
+| `XAR_IPC_PORT` | TCP port for IPC | `28213` |
 | `XAR_LOG_LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 
 ## Dependencies

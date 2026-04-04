@@ -23,7 +23,7 @@ describe('createListCommand', () => {
 
   async function getCmd() {
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 18792, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 28213, logLevel: 'info' }),
     }))
     const { createListCommand } = await import('../../src/commands/list.js')
     const cmd = createListCommand()

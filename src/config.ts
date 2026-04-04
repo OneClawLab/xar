@@ -12,7 +12,7 @@ export function getTheClawHome(): string {
 
 export function getIpcPort(): number {
   const port = process.env.XAR_IPC_PORT
-  return port ? parseInt(port, 10) : 18792
+  return port ? parseInt(port, 10) : 28213
 }
 
 export function getLogLevel(): 'debug' | 'info' | 'warn' | 'error' {

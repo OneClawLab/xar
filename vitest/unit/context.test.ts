@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock getDaemonConfig before importing context
 vi.mock('../../src/config.js', () => ({
-  getDaemonConfig: () => ({ theClawHome: '/tmp/test-theclaw', ipcPort: 18792 }),
+  getDaemonConfig: () => ({ theClawHome: '/tmp/test-theclaw', ipcPort: 28213 }),
 }))
 
 // Mock fs for identity/memory loading

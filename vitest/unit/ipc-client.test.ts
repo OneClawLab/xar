@@ -39,7 +39,7 @@ describe('IpcClient', () => {
   })
 
   it('resolves connect() when open fires', async () => {
-    const client = new IpcClient(18792)
+    const client = new IpcClient(28213)
     const connectPromise = client.connect()
     MockWS.lastInstance!.emit('open')
     await expect(connectPromise).resolves.toBeUndefined()
@@ -48,7 +48,7 @@ describe('IpcClient', () => {
 })
 
 async function driveIpcMessage(response: unknown) {
-  const responsePromise = sendIpcMessage({ type: 'agent_start', agent_id: 'test' }, 18792)
+  const responsePromise = sendIpcMessage({ type: 'agent_start', agent_id: 'test' }, 28213)
   const ws = MockWS.lastInstance!
   // Override send so it immediately emits the response after the message handler is registered
   ws.send = (_data: string, cb?: (err?: Error) => void) => {

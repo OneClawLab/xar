@@ -21,7 +21,7 @@ describe('createStopCommand', () => {
 
   async function getCmd(daemonRunning: boolean, ipcResponse: { type: string; error?: string }) {
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: '/tmp/theclaw', ipcPort: 18792, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: '/tmp/theclaw', ipcPort: 28213, logLevel: 'info' }),
     }))
     vi.doMock('../../src/daemon/pid.js', () => ({
       checkDaemonRunning: async () => daemonRunning,
@@ -51,7 +51,7 @@ describe('createStopCommand', () => {
   it('sends agent_stop IPC message with correct agent_id', async () => {
     let capturedMsg: unknown
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: '/tmp/theclaw', ipcPort: 18792, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: '/tmp/theclaw', ipcPort: 28213, logLevel: 'info' }),
     }))
     vi.doMock('../../src/daemon/pid.js', () => ({
       checkDaemonRunning: async () => true,
