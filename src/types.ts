@@ -13,15 +13,18 @@ export interface InboundMessage {
    *  Determined by xgw mention gating. Defaults to 'message' if omitted. */
   event_type?: 'message' | 'record'
   /**
-   * Push-based completion: when set, the run-loop automatically delivers the
-   * worker's LLM text response back to this peer after the turn completes,
-   * without requiring the worker LLM to call send_message explicitly.
+   * Reply-back address: when set, the run-loop automatically delivers the
+   * LLM text response to this target after the turn completes.
+   *
+   * Format mirrors send_message target: "agent:<agent_id>" or "peer:<peer_id>".
+   * - "agent:xxx" → announce result to that agent (triggers its next LLM turn)
+   * - "peer:xxx"  → deliver result directly to that peer via IPC (best-effort)
    *
    * Set by the orchestrator when dispatching a task via send_message(target='agent:...').
-   * The worker LLM only needs to produce a plain text response — the framework
-   * handles delivery back to both the orchestrator and the original peer.
+   * The auto-announce message does NOT carry reply_to, so the chain terminates
+   * after one hop — preventing infinite ping-pong loops between agents.
    */
-  reply_to_peer?: OutboundTarget
+  reply_to?: string
   /**
    * Task context injected into the worker's system prompt.
    * Describes the worker's role and constraints for this specific task.

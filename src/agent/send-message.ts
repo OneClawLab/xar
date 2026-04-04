@@ -20,9 +20,6 @@ export interface SendMessageDeps {
   ipcConn: IpcConnection | undefined
   sendToAgent: ((agentId: string, message: InboundMessage) => boolean) | undefined
   convId: string
-  /** OutboundTarget of the current inbound message's peer, if external.
-   *  Passed to deliverToAgent so the worker can auto-announce back to the peer. */
-  currentPeerTarget: OutboundTarget | undefined
   logger: Logger
   /** Per-agent stream sequence counter, shared with run-loop */
   nextStreamSeq: () => number
@@ -138,7 +135,6 @@ async function deliverToAgent(
   deps: SendMessageDeps,
   agentId: string,
   content: string,
-  replyToPeer?: OutboundTarget,
 ): Promise<{ status: string; target?: string; message?: string }> {
   const { agentId: selfAgentId, convId, sendToAgent, threadStore, logger } = deps
 
@@ -160,12 +156,12 @@ async function deliverToAgent(
     'Your text response will be automatically reported back to the orchestrator.',
   ].join('\n')
 
-  // 3. Send to agent — include reply_to_peer so the run-loop can auto-announce
+  // 3. Send to agent — set reply_to so the run-loop auto-announces the result back
   const delivered = sendToAgent(agentId, {
     source,
     content,
     task_context: taskContext,
-    ...(replyToPeer !== undefined ? { reply_to_peer: replyToPeer } : {}),
+    reply_to: `agent:${selfAgentId}`,
   })
   if (!delivered) {
     return { status: 'error', message: 'agent not running' }
@@ -223,10 +219,6 @@ to you — the worker does not need to call send_message to reply.`,
         case 'peer':
           return await deliverToPeer(deps, id, content)
         case 'agent':
-          // reply_to_peer is intentionally NOT passed here — workers should not
-          // directly deliver to the peer by default. The orchestrator synthesizes
-          // results and delivers them. Use send_message(target='peer:...') for
-          // explicit progress notifications instead.
           return await deliverToAgent(deps, id, content)
         default:
           return { status: 'error', message: 'invalid target format' }

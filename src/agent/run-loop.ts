@@ -18,7 +18,7 @@ import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
 import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
 import { processTurn } from './turn.js'
-import { createSendMessageTool } from './send-message.js'
+import { createSendMessageTool, splitTarget, findPeerSource } from './send-message.js'
 import { getDaemonConfig } from '../config.js'
 import { join } from 'path'
 
@@ -244,7 +244,6 @@ export class RunLoopImpl implements RunLoop {
         ipcConn: conn,
         sendToAgent: this.sendToAgent,
         convId,
-        currentPeerTarget: target ?? undefined,
         logger: this.logger,
         nextStreamSeq: () => ++this.streamSeq,
       })
@@ -296,45 +295,54 @@ export class RunLoopImpl implements RunLoop {
       await threadStore.pushBatch(threadEvents)
       this.logger.info(`Message processed successfully: stream=${streamId} records=${threadEvents.length}`)
 
-      // ── Push-based announce (internal messages only) ──────────────────────
-      // When a worker finishes processing a task dispatched by another agent,
-      // automatically push the LLM text response back to the sender agent.
-      // This removes the requirement for the worker LLM to call send_message.
-      if (isInternal) {
-        const parsed = parseSource(msg.source)
-        const senderAgentId = parsed.sender_agent_id
-        if (senderAgentId && this.sendToAgent) {
-          const assistantText = extractAssistantText(result.newMessages)
-          if (assistantText) {
-            const announceSource = `internal:agent:${convId}:${this.agentId}`
-            const announced = this.sendToAgent(senderAgentId, {
-              source: announceSource,
+      // ── reply_to: auto-deliver result to the requested target ────────────
+      // Only triggered when the inbound message carried a reply_to address.
+      // The outgoing message does NOT carry reply_to, so the chain terminates
+      // after one hop — preventing infinite ping-pong loops between agents.
+      if (msg.reply_to) {
+        const assistantText = extractAssistantText(result.newMessages)
+        if (assistantText) {
+          const [prefix, id] = splitTarget(msg.reply_to)
+
+          if (prefix === 'agent' && this.sendToAgent) {
+            const replySource = `internal:agent:${convId}:${this.agentId}`
+            const announced = this.sendToAgent(id, {
+              source: replySource,
               content: assistantText,
               event_type: 'message',
+              // intentionally no reply_to — chain terminates here
             })
             if (announced) {
-              this.logger.info(`Auto-announce: ${this.agentId} → ${senderAgentId} (${assistantText.length} chars)`)
+              this.logger.info(`Auto-announce: ${this.agentId} → ${id} (${assistantText.length} chars)`)
             } else {
-              this.logger.warn(`Auto-announce failed: sender agent ${senderAgentId} not running`)
+              this.logger.warn(`Auto-announce failed: agent ${id} not running`)
             }
-
-            // If the original task carried a reply_to_peer, deliver the result
-            // directly to the peer as well (best-effort, non-blocking).
-            // This is for single-worker scenarios where the orchestrator wants
-            // the worker result delivered immediately without a second LLM turn.
-            const replyToPeer = msg.reply_to_peer
-            if (replyToPeer && conn) {
-              const seq = ++this.streamSeq
-              const peerStreamId = `${replyToPeer.channel_id}:${replyToPeer.conversation_id}:${seq}`
-              const peerDeliver = new Deliver(conn, replyToPeer)
-              try {
-                await peerDeliver.streamStart(peerStreamId)
-                await peerDeliver.streamToken(peerStreamId, assistantText)
-                await peerDeliver.streamEnd(peerStreamId)
-                this.logger.info(`Auto-deliver to peer: ${replyToPeer.peer_id} via ${replyToPeer.channel_id}`)
-              } catch (err) {
-                this.logger.warn(`Auto-deliver to peer failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
+          } else if (prefix === 'peer' && conn) {
+            // Deliver directly to peer — look up full OutboundTarget from thread history
+            try {
+              const events = await threadStore.peek({ lastEventId: 0, limit: 2000 })
+              const peerSource = findPeerSource(events, id)
+              if (peerSource) {
+                const parsed = parseSource(peerSource)
+                if (parsed.channel_id && parsed.peer_id && parsed.conversation_id) {
+                  const peerTarget = {
+                    channel_id: parsed.channel_id,
+                    peer_id: parsed.peer_id,
+                    conversation_id: parsed.conversation_id,
+                  }
+                  const seq = ++this.streamSeq
+                  const peerStreamId = `${peerTarget.channel_id}:${peerTarget.conversation_id}:${seq}`
+                  const peerDeliver = new Deliver(conn, peerTarget)
+                  await peerDeliver.streamStart(peerStreamId)
+                  await peerDeliver.streamToken(peerStreamId, assistantText)
+                  await peerDeliver.streamEnd(peerStreamId)
+                  this.logger.info(`Auto-deliver to peer: ${id} via ${peerTarget.channel_id}`)
+                }
+              } else {
+                this.logger.warn(`Auto-deliver to peer failed: peer ${id} not found in thread history`)
               }
+            } catch (err) {
+              this.logger.warn(`Auto-deliver to peer failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
             }
           }
         }
@@ -359,20 +367,18 @@ export class RunLoopImpl implements RunLoop {
 
       // For internal messages: notify the sender agent that the task failed.
       // Without this, the orchestrator would wait forever for a result that never comes.
-      const isInternalMsg = parseSource(msg.source).kind === 'internal'
-      if (isInternalMsg) {
-        const parsed = parseSource(msg.source)
-        const senderAgentId = parsed.sender_agent_id
-        if (senderAgentId && this.sendToAgent) {
+      if (msg.reply_to) {
+        const [prefix, id] = splitTarget(msg.reply_to)
+        if (prefix === 'agent' && this.sendToAgent) {
           const convId = extractConvId(msg.source)
           const failureNotice = `[Task failed] Agent ${this.agentId} encountered an error: ${errorMsg}`
-          const announced = this.sendToAgent(senderAgentId, {
+          const announced = this.sendToAgent(id, {
             source: `internal:agent:${convId}:${this.agentId}`,
             content: failureNotice,
             event_type: 'message',
           })
           if (!announced) {
-            this.logger.warn(`Failed to notify sender agent ${senderAgentId} of task failure`)
+            this.logger.warn(`Failed to notify agent ${id} of task failure`)
           }
         }
       }

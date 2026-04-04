@@ -273,3 +273,100 @@ describe('agent-to-agent interaction', () => {
 })
 
 
+
+// ── reply_to: auto-announce mechanism ────────────────────────────────────────
+
+describe('reply_to auto-announce', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('announces result to reply_to agent when processTurn returns assistant text', async () => {
+    const { processTurn } = await import('../../src/agent/turn.js')
+    vi.mocked(processTurn).mockResolvedValue({
+      newMessages: [{ role: 'assistant', content: 'task done' }],
+    })
+
+    const sendToAgent = vi.fn(() => true)
+    const queue = new AsyncQueueImpl<InboundMessage>()
+    const loop = new RunLoopImpl('worker', queue, new Map(), makePai(), undefined, sendToAgent)
+
+    queue.push({
+      source: 'internal:agent:conv-1:orchestrator',
+      content: 'do the task',
+      reply_to: 'agent:orchestrator',
+    })
+    queue.close()
+    await loop.start()
+
+    expect(sendToAgent).toHaveBeenCalledOnce()
+    const [targetId, msg] = sendToAgent.mock.calls[0]!
+    expect(targetId).toBe('orchestrator')
+    expect(msg.content).toBe('task done')
+    expect(msg.source).toBe('internal:agent:conv-1:worker')
+    // reply_to must NOT be forwarded — chain terminates here
+    expect(msg.reply_to).toBeUndefined()
+  })
+
+  it('does NOT announce when reply_to is absent', async () => {
+    const { processTurn } = await import('../../src/agent/turn.js')
+    vi.mocked(processTurn).mockResolvedValue({
+      newMessages: [{ role: 'assistant', content: 'hello' }],
+    })
+
+    const sendToAgent = vi.fn(() => true)
+    const queue = new AsyncQueueImpl<InboundMessage>()
+    const loop = new RunLoopImpl('worker', queue, new Map(), makePai(), undefined, sendToAgent)
+
+    // No reply_to — one-way message
+    queue.push({ source: 'internal:agent:conv-1:orchestrator', content: 'notify only' })
+    queue.close()
+    await loop.start()
+
+    expect(sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it('does NOT announce when processTurn returns no assistant text', async () => {
+    const { processTurn } = await import('../../src/agent/turn.js')
+    vi.mocked(processTurn).mockResolvedValue({ newMessages: [] })
+
+    const sendToAgent = vi.fn(() => true)
+    const queue = new AsyncQueueImpl<InboundMessage>()
+    const loop = new RunLoopImpl('worker', queue, new Map(), makePai(), undefined, sendToAgent)
+
+    queue.push({
+      source: 'internal:agent:conv-1:orchestrator',
+      content: 'do task',
+      reply_to: 'agent:orchestrator',
+    })
+    queue.close()
+    await loop.start()
+
+    expect(sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it('orchestrator receiving worker reply does NOT re-announce (no reply_to on announce msg)', async () => {
+    // This is the core loop-prevention test.
+    // Worker announces to orchestrator — the announce msg has no reply_to.
+    // Orchestrator processes it and should NOT call sendToAgent again.
+    const { processTurn } = await import('../../src/agent/turn.js')
+    vi.mocked(processTurn).mockResolvedValue({
+      newMessages: [{ role: 'assistant', content: 'summary done' }],
+    })
+
+    const sendToAgent = vi.fn(() => true)
+    const queue = new AsyncQueueImpl<InboundMessage>()
+    const loop = new RunLoopImpl('orchestrator', queue, new Map(), makePai(), undefined, sendToAgent)
+
+    // Simulates the auto-announce message from worker — no reply_to
+    queue.push({
+      source: 'internal:agent:conv-1:worker',
+      content: 'task done',
+      // no reply_to — chain terminates
+    })
+    queue.close()
+    await loop.start()
+
+    expect(sendToAgent).not.toHaveBeenCalled()
+  })
+})
