@@ -4,12 +4,74 @@
 
 import type { ThreadStore } from 'thread'
 import type { ChatInput, Message, MessageContent } from 'pai'
+import type { MessageWithToolCalls } from '../types.js'
 import { promises as fs } from 'fs'
 import { join } from 'path'
 import { getDaemonConfig } from '../config.js'
 import type { AgentConfig } from './types.js'
 import type { InboundMessage } from '../types.js'
 import { parseSource } from './router.js'
+
+/**
+ * Agent role for the current Turn, determined by detectRole.
+ * Maps to Communication Context scenarios A-F from the design doc.
+ */
+export type AgentRole =
+  | 'front-reactive'
+  | 'front-autonomous'
+  | 'worker'
+  | 'worker-synthesizing'
+  | 'orchestrator-synthesizing'
+  | 'orchestrator-waiting'
+  | 'participant'
+
+/**
+ * Task summary context passed to detectRole to inform role detection.
+ * Populated by the run-loop from TaskManager state before each Turn.
+ */
+export interface TaskSummaryContext {
+  hasPendingTasks: boolean
+  isSummaryTurn: boolean
+  taskId?: string
+  subtaskResults?: Array<{ worker: string; instruction: string; result?: string; status: string }>
+  replyTarget?: string
+}
+
+/**
+ * Detect the agent's role for the current Turn based on the inbound message,
+ * agent config, and optional task context.
+ *
+ * Logic (Property 7 from design doc):
+ * - external source + hasPendingTasks           → 'orchestrator-waiting'
+ * - external source + no pending tasks + reactive → 'front-reactive'
+ * - external source + no pending tasks + autonomous → 'front-autonomous'
+ * - internal source + isSummaryTurn + has reply_to → 'worker-synthesizing'
+ * - internal source + isSummaryTurn + no reply_to  → 'orchestrator-synthesizing'
+ * - internal source + not summary + has reply_to   → 'worker'
+ * - internal source + not summary + no reply_to    → 'participant'
+ * - fallback                                        → 'front-reactive'
+ */
+export function detectRole(
+  message: InboundMessage,
+  config: AgentConfig,
+  taskContext?: TaskSummaryContext,
+): AgentRole {
+  const parsed = parseSource(message.source)
+
+  if (parsed.kind === 'external') {
+    if (taskContext?.hasPendingTasks) return 'orchestrator-waiting'
+    return config.routing.mode === 'reactive' ? 'front-reactive' : 'front-autonomous'
+  }
+
+  if (parsed.kind === 'internal') {
+    if (taskContext?.isSummaryTurn) {
+      return message.reply_to ? 'worker-synthesizing' : 'orchestrator-synthesizing'
+    }
+    return message.reply_to ? 'worker' : 'participant'
+  }
+
+  return 'front-reactive'
+}
 
 /**
  * Load agent identity (system prompt)
@@ -86,12 +148,12 @@ async function loadThreadHistory(threadStore: ThreadStore): Promise<Message[]> {
       }
 
       if (event.source === 'self') {
-        const msg: Message = {
+        const msg: MessageWithToolCalls = {
           role: 'assistant',
           content: parsed ? (parsed['content'] as MessageContent) : event.content,
         }
         if (parsed?.['tool_calls'] !== undefined) {
-          ;(msg as any).tool_calls = parsed['tool_calls']
+          msg.tool_calls = parsed['tool_calls'] as NonNullable<MessageWithToolCalls['tool_calls']>
         }
         messages.push(msg)
       } else if (event.source.startsWith('tool:')) {
@@ -114,11 +176,11 @@ async function loadThreadHistory(threadStore: ThreadStore): Promise<Message[]> {
  * Extract peer ID from source address
  */
 function extractPeerId(source: string): string | undefined {
-  const [type, id] = source.split(':')
-  if (type === 'peer') {
-    return id
+  try {
+    return parseSource(source).peer_id
+  } catch {
+    return undefined
   }
-  return undefined
 }
 
 /**
@@ -139,16 +201,45 @@ function extractRecentParticipants(events: { source: string }[]): string[] {
 }
 
 /**
+ * Format the conversation line for front-facing scenarios (A/B).
+ */
+function formatConversationLine(parsed: ReturnType<typeof parseSource>): string {
+  return parsed.conversation_type === 'dm'
+    ? `Conversation: dm with peer:${parsed.peer_id} (via ${parsed.channel_id})`
+    : `Conversation: ${parsed.conversation_type ?? 'unknown'} ${parsed.conversation_id ?? ''} (via ${parsed.channel_id ?? ''})`
+}
+
+/**
+ * Explanation of the receive_user_update mechanism injected at the end of every
+ * Communication Context section (Requirement 7.4).
+ */
+const RECEIVE_USER_UPDATE_EXPLANATION = `
+A special tool \`receive_user_update\` may appear in your tool call history.
+It carries real-time updates from the user during task execution.
+Treat its content as refinements to your current task, not a new request.`.trimStart()
+
+/**
  * Build Communication Context section for the system prompt.
- * Tells the LLM about its identity, current conversation, and available targets.
+ * Uses detectRole to select the appropriate scenario template (A-F).
+ *
+ * Scenarios (from design doc §10, Requirements 6.1-6.7):
+ *   A: front-reactive       — identity, conversation, message source, reply target, available agents
+ *   B: front-autonomous     — identity, conversation, participants, self-decide whether to respond
+ *   C: worker               — identity, delegator, task, DO NOT send_message
+ *   D: worker-synthesizing  — identity, delegator, subtask results, Do NOT delegate further
+ *   E: orchestrator-synthesizing — task ID, origin, subtask results, reply target
+ *   F: orchestrator-waiting — task ID, subtask statuses, optional progress update
  */
 export async function buildCommunicationContext(
   agentId: string,
-  source: string,
+  message: InboundMessage,
+  config: AgentConfig,
   threadStore: ThreadStore,
   availableAgents: string[],
+  taskContext?: TaskSummaryContext,
 ): Promise<string> {
-  const parsed = parseSource(source)
+  const role = detectRole(message, config, taskContext)
+  const parsed = parseSource(message.source)
   const otherAgents = availableAgents.filter((a) => a !== agentId)
   const agentList = otherAgents.length > 0
     ? otherAgents.map((a) => `agent:${a}`).join(', ')
@@ -156,42 +247,102 @@ export async function buildCommunicationContext(
 
   const lines: string[] = ['## Communication Context']
 
-  if (parsed.kind === 'external') {
-    lines.push(`- You are agent: ${agentId}`)
-
-    if (parsed.conversation_type === 'dm') {
-      lines.push(`- Conversation: dm with peer:${parsed.peer_id} (via ${parsed.channel_id})`)
-    } else {
-      lines.push(`- Conversation: ${parsed.conversation_type} ${parsed.conversation_id} (via ${parsed.channel_id})`)
+  switch (role) {
+    case 'front-reactive': {
+      // Scenario A
+      lines.push(`You are: agent:${agentId}`)
+      lines.push(formatConversationLine(parsed))
+      lines.push(`Current message from: peer:${parsed.peer_id}`)
+      lines.push(`Your text response will be delivered to: peer:${parsed.peer_id}`)
+      lines.push(`Available agents: ${agentList}`)
+      break
     }
 
-    lines.push(`- Current message from: peer:${parsed.peer_id}`)
-
-    // For group conversations, extract recent participants
-    if (parsed.conversation_type !== 'dm') {
+    case 'front-autonomous': {
+      // Scenario B
+      lines.push(`You are: agent:${agentId}`)
+      lines.push(formatConversationLine(parsed))
+      // Extract participants from thread history
       try {
         const events = await threadStore.peek({ lastEventId: 0, limit: 500 })
         const participants = extractRecentParticipants(events)
         if (participants.length > 0) {
-          lines.push(`- Recent participants: ${participants.join(', ')}`)
+          lines.push(`Participants: ${participants.join(', ')}`)
         }
       } catch {
         // skip if thread peek fails
       }
+      lines.push('You decide whether to respond. An empty response means silence.')
+      lines.push(`Available agents: ${agentList}`)
+      break
     }
 
-    lines.push(`- Your text response will be streamed to peer:${parsed.peer_id}`)
-    lines.push(`- Available agents: ${agentList}`)
-    lines.push('- Use send_message tool for messages to other targets')
-  } else if (parsed.kind === 'internal') {
-    // Worker context: clear, focused, no confusion about delivery
-    lines.push(`- You are agent: ${agentId}`)
-    lines.push(`- Message from: agent:${parsed.sender_agent_id}`)
-    lines.push('- Your text response will be automatically reported back to the sender agent.')
-    lines.push('- Do NOT use send_message to contact external peers.')
-    lines.push('- Focus only on completing the assigned task and returning your result as plain text.')
-    lines.push(`- Available agents: ${agentList}`)
+    case 'worker': {
+      // Scenario C
+      lines.push(`You are: agent:${agentId}`)
+      lines.push(`Delegated by: agent:${parsed.sender_agent_id}`)
+      lines.push('Task: <message content is the task>')
+      lines.push('DO NOT use send_message to reply. Your text response will be automatically reported back.')
+      lines.push(`Available agents: ${agentList} (for sub-delegation only)`)
+      break
+    }
+
+    case 'worker-synthesizing': {
+      // Scenario D
+      lines.push(`You are: agent:${agentId}`)
+      lines.push(`Delegated by: agent:${parsed.sender_agent_id}`)
+      lines.push('Subtask results:')
+      if (taskContext?.subtaskResults && taskContext.subtaskResults.length > 0) {
+        for (const st of taskContext.subtaskResults) {
+          lines.push(`- worker: ${st.worker}, status: ${st.status}, result: ${st.result ?? '(none)'}`)
+        }
+      }
+      lines.push('Synthesize the results above into a final answer. Do NOT delegate further.')
+      lines.push('Your text response will be automatically reported back.')
+      break
+    }
+
+    case 'orchestrator-synthesizing': {
+      // Scenario E
+      lines.push(`You are: agent:${agentId}`)
+      lines.push(`Task ID: ${taskContext?.taskId ?? '(unknown)'}`)
+      lines.push(`Origin: ${taskContext?.replyTarget ?? '(unknown)'}`)
+      lines.push('All subtasks completed:')
+      if (taskContext?.subtaskResults && taskContext.subtaskResults.length > 0) {
+        for (const st of taskContext.subtaskResults) {
+          lines.push(`- worker: ${st.worker}, status: ${st.status}, result: ${st.result ?? '(none)'}`)
+        }
+      }
+      lines.push(`Your text response will be delivered to: ${taskContext?.replyTarget ?? '(unknown)'}`)
+      break
+    }
+
+    case 'orchestrator-waiting': {
+      // Scenario F
+      lines.push(`You are: agent:${agentId}`)
+      lines.push(`Task ID: ${taskContext?.taskId ?? '(unknown)'}`)
+      lines.push('Waiting for subtasks:')
+      if (taskContext?.subtaskResults && taskContext.subtaskResults.length > 0) {
+        for (const st of taskContext.subtaskResults) {
+          lines.push(`- worker: ${st.worker}, status: ${st.status}`)
+        }
+      }
+      lines.push('You may optionally send a progress update to the user.')
+      break
+    }
+
+    case 'participant': {
+      // Participant: notified but no reply expected
+      lines.push(`You are: agent:${agentId}`)
+      lines.push(`Message from: agent:${parsed.sender_agent_id}`)
+      lines.push('You are a participant in this conversation. No reply is expected.')
+      lines.push(`Available agents: ${agentList}`)
+      break
+    }
   }
+
+  lines.push('')
+  lines.push(RECEIVE_USER_UPDATE_EXPLANATION)
 
   return lines.join('\n')
 }
@@ -199,6 +350,7 @@ export async function buildCommunicationContext(
 /**
  * Build LLM context from agent config, thread history, and memory.
  * threadId is required so we can load the per-thread memory summary.
+ * taskContext is optional and used to inform role detection and context generation.
  */
 export async function buildContext(
   agentId: string,
@@ -207,18 +359,17 @@ export async function buildContext(
   message: InboundMessage,
   threadId: string,
   availableAgents?: string[],
+  taskContext?: TaskSummaryContext,
 ): Promise<ChatInput> {
   const peerId = extractPeerId(message.source)
   const [identity, memory, history, commContext] = await Promise.all([
     loadIdentity(agentId),
     loadMemory(agentId, peerId, threadId),
     loadThreadHistory(threadStore),
-    buildCommunicationContext(agentId, message.source, threadStore, availableAgents ?? []),
+    buildCommunicationContext(agentId, message, config, threadStore, availableAgents ?? [], taskContext),
   ])
 
-  // task_context is injected by the orchestrator when dispatching a task via
-  // send_message(target='agent:...'). It describes the worker's role and constraints.
-  const parts = [identity, memory, commContext, message.task_context ?? ''].filter(Boolean)
+  const parts = [identity, memory, commContext].filter(Boolean)
   const systemPrompt = parts.join('\n\n')
 
   return {

@@ -30,7 +30,7 @@ export function createStopCommand(): Command {
 
         if (response.type === 'ok') {
           console.log(`Agent ${id} stopped`)
-        } else {
+        } else if (response.type === 'error') {
           throw new CliError(response.error || 'Failed to stop agent', 1)
         }
       } catch (err) {

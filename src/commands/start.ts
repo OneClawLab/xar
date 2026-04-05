@@ -30,7 +30,7 @@ export function createStartCommand(): Command {
 
         if (response.type === 'ok') {
           console.log(`Agent ${id} started`)
-        } else {
+        } else if (response.type === 'error') {
           throw new CliError(response.error || 'Failed to start agent', 1)
         }
       } catch (err) {

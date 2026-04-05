@@ -16,7 +16,7 @@ describe('Router', () => {
     agent_id: 'test-agent',
     kind: 'user',
     pai: { provider: 'openai', model: 'gpt-4o' },
-    routing: { default: 'per-peer' },
+    routing: { mode: 'reactive', trigger: 'mention' },
     memory: { compact_threshold_tokens: 8000, session_compact_threshold_tokens: 4000 },
     retry: { max_attempts: 3 },
   }
@@ -71,46 +71,50 @@ describe('Router', () => {
   })
 
   describe('determineThreadId', () => {
-    it('should route per-peer using peer_id from external source', () => {
-      const config = { ...baseConfig, routing: { default: 'per-peer' as const } }
+    it('should route reactive dm to peers/<peer_id>', () => {
+      const config = { ...baseConfig, routing: { mode: 'reactive' as const, trigger: 'mention' as const } }
       const threadId = determineThreadId(config, 'external:telegram:main:dm:alice:alice')
       expect(threadId).toBe('peers/alice')
     })
 
-    it('should route per-peer using sender_agent_id from internal source', () => {
-      const config = { ...baseConfig, routing: { default: 'per-peer' as const } }
-      const threadId = determineThreadId(config, 'internal:dm:default:warden')
-      expect(threadId).toBe('peers/warden')
+    it('should route reactive group to conversations/<convId>/peers/<peerId>', () => {
+      const config = { ...baseConfig, routing: { mode: 'reactive' as const, trigger: 'mention' as const } }
+      const threadId = determineThreadId(config, 'external:telegram:main:group:grp-123:bob')
+      expect(threadId).toBe('conversations/grp-123/peers/bob')
     })
 
-    it('should route per-conversation using conversation_id', () => {
-      const config = { ...baseConfig, routing: { default: 'per-conversation' as const } }
+    it('should route autonomous to conversations/<convId>', () => {
+      const config = { ...baseConfig, routing: { mode: 'autonomous' as const, trigger: 'all' as const } }
       const threadId = determineThreadId(config, 'external:telegram:main:group:grp-123:bob')
       expect(threadId).toBe('conversations/grp-123')
     })
 
-    it('should route per-agent to main thread', () => {
-      const config = { ...baseConfig, routing: { default: 'per-agent' as const } }
-      const threadId = determineThreadId(config, 'external:telegram:main:dm:alice:alice')
-      expect(threadId).toBe('main')
+    it('should route internal source to internal/<convId>', () => {
+      const config = { ...baseConfig, routing: { mode: 'reactive' as const, trigger: 'mention' as const } }
+      const threadId = determineThreadId(config, 'internal:dm:default:warden')
+      expect(threadId).toBe('internal/default')
     })
 
     it('should be deterministic for same inputs', () => {
-      const config = { ...baseConfig, routing: { default: 'per-peer' as const } }
+      const config = { ...baseConfig, routing: { mode: 'reactive' as const, trigger: 'mention' as const } }
       const source = 'external:telegram:main:dm:alice:alice'
       expect(determineThreadId(config, source)).toBe(determineThreadId(config, source))
     })
 
     it('should produce different thread IDs for different peers', () => {
-      const config = { ...baseConfig, routing: { default: 'per-peer' as const } }
+      const config = { ...baseConfig, routing: { mode: 'reactive' as const, trigger: 'mention' as const } }
       const t1 = determineThreadId(config, 'external:telegram:main:dm:alice:alice')
       const t2 = determineThreadId(config, 'external:telegram:main:dm:bob:bob')
       expect(t1).not.toBe(t2)
     })
 
-    it('should throw on unknown routing mode', () => {
-      const config = { ...baseConfig, routing: { default: 'unknown-mode' as any } }
-      expect(() => determineThreadId(config, 'external:telegram:main:dm:alice:alice')).toThrow()
+    it('should apply override when convId matches', () => {
+      const config = {
+        ...baseConfig,
+        routing: { mode: 'reactive' as const, trigger: 'mention' as const, override: { 'alice': 'custom/thread' } },
+      }
+      const threadId = determineThreadId(config, 'external:telegram:main:dm:alice:alice')
+      expect(threadId).toBe('custom/thread')
     })
   })
 
@@ -136,5 +140,82 @@ describe('Router', () => {
     it('should return empty string for completely invalid string', () => {
       expect(extractConvId('not-a-valid-source')).toBe('')
     })
+  })
+})
+
+describe('parseSource – additional malformed cases', () => {
+  it('should throw on external with only three colon-separated parts', () => {
+    // "external:only:three" → parts.length = 3, not >= 6
+    expect(() => parseSource('external:only:three')).toThrow()
+  })
+
+  it('should throw on internal with only two parts', () => {
+    // "internal:dm" → parts.length = 2, not >= 4
+    expect(() => parseSource('internal:dm')).toThrow()
+  })
+})
+
+describe('determineThreadId – override rules', () => {
+  const baseConfig: AgentConfig = {
+    agent_id: 'test-agent',
+    kind: 'user',
+    pai: { provider: 'openai', model: 'gpt-4o' },
+    routing: { mode: 'reactive', trigger: 'mention' },
+    memory: { compact_threshold_tokens: 8000, session_compact_threshold_tokens: 4000 },
+    retry: { max_attempts: 3 },
+  }
+
+  it('override by conv_id takes precedence over mode-based routing', () => {
+    const config: AgentConfig = {
+      ...baseConfig,
+      routing: {
+        mode: 'reactive',
+        trigger: 'mention',
+        override: { 'conv123': 'custom/thread' },
+      },
+    }
+    // group message with conv_id=conv123
+    const threadId = determineThreadId(config, 'external:telegram:main:group:conv123:alice')
+    expect(threadId).toBe('custom/thread')
+  })
+
+  it('override by peer_id takes precedence over mode-based routing', () => {
+    const config: AgentConfig = {
+      ...baseConfig,
+      routing: {
+        mode: 'reactive',
+        trigger: 'mention',
+        override: { 'peer456': 'custom/peer-thread' },
+      },
+    }
+    // dm where peer_id=peer456 (conv_id also = peer456 for dm, but override key matches)
+    const threadId = determineThreadId(config, 'external:telegram:main:dm:peer456:peer456')
+    expect(threadId).toBe('custom/peer-thread')
+  })
+
+  it('override takes precedence over autonomous mode routing', () => {
+    const config: AgentConfig = {
+      ...baseConfig,
+      routing: {
+        mode: 'autonomous',
+        trigger: 'all',
+        override: { 'grp-999': 'special/autonomous-override' },
+      },
+    }
+    const threadId = determineThreadId(config, 'external:telegram:main:group:grp-999:bob')
+    expect(threadId).toBe('special/autonomous-override')
+  })
+
+  it('falls back to mode-based routing when no override matches', () => {
+    const config: AgentConfig = {
+      ...baseConfig,
+      routing: {
+        mode: 'reactive',
+        trigger: 'mention',
+        override: { 'other-conv': 'custom/thread' },
+      },
+    }
+    const threadId = determineThreadId(config, 'external:telegram:main:dm:alice:alice')
+    expect(threadId).toBe('peers/alice')
   })
 })

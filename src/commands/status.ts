@@ -8,31 +8,8 @@ import { join } from 'path'
 import { getDaemonConfig } from '../config.js'
 import { checkDaemonRunning } from '../daemon/pid.js'
 import { sendIpcMessage } from '../ipc/client.js'
-import { getThreadLib } from '../agent/thread-lib.js'
 import { CliError } from '../types.js'
 import type { AgentConfig } from '../agent/types.js'
-
-interface InboxInfo {
-  eventCount: number
-  lastEventId: number | null
-  lastEventAt: string | null
-}
-
-async function getInboxInfo(inboxPath: string): Promise<InboxInfo | null> {
-  try {
-    const lib = getThreadLib()
-    const store = await lib.open(inboxPath)
-    const events = await store.peek({ lastEventId: 0, limit: 9999 })
-    const last = events.length > 0 ? events[events.length - 1] : null
-    return {
-      eventCount: events.length,
-      lastEventId: last?.id ?? null,
-      lastEventAt: last?.created_at ?? null,
-    }
-  } catch {
-    return null
-  }
-}
 
 async function getSessionCount(agentDir: string): Promise<number> {
   try {
@@ -94,8 +71,6 @@ export function createStatusCommand(): Command {
           }
 
           // Gather disk info
-          const inboxPath = join(agentDir, 'inbox')
-          const inbox = await getInboxInfo(inboxPath)
           const sessionCount = await getSessionCount(agentDir)
           const memoryFiles = await getMemoryFiles(agentDir)
 
@@ -107,7 +82,6 @@ export function createStatusCommand(): Command {
               daemon_running: daemonRunning,
               pai: agentConfig.pai,
               routing: agentConfig.routing,
-              inbox: inbox ?? { error: 'unavailable' },
               sessions: sessionCount,
               memory_files: memoryFiles,
               ...runtimeStatus,
@@ -118,13 +92,7 @@ export function createStatusCommand(): Command {
             console.log(`Dir:      ${agentDir}`)
             console.log(`Status:   ${running ? 'running' : 'stopped'}`)
             console.log(`Provider: ${agentConfig.pai.provider} / ${agentConfig.pai.model}`)
-            console.log(`Routing:  ${agentConfig.routing.default}`)
-            if (inbox) {
-              const lastAt = inbox.lastEventAt ? new Date(inbox.lastEventAt).toISOString() : 'never'
-              console.log(`Inbox:    ${inbox.eventCount} events (last: ${lastAt})`)
-            } else {
-              console.log(`Inbox:    (unavailable)`)
-            }
+            console.log(`Routing:  ${agentConfig.routing.mode}/${agentConfig.routing.trigger}`)
             console.log(`Sessions: ${sessionCount} session file(s)`)
             if (memoryFiles.length > 0) {
               console.log(`Memory:   ${memoryFiles.join(', ')}`)
@@ -169,13 +137,11 @@ export function createStatusCommand(): Command {
                 const raw = await fs.readFile(join(agentDir, 'config.json'), 'utf-8')
                 const agentConfig = JSON.parse(raw) as AgentConfig
                 const runtime = runtimeMap.get(entry.name)
-                const inbox = await getInboxInfo(join(agentDir, 'inbox'))
                 agents.push({
                   id: entry.name,
                   kind: agentConfig.kind,
                   provider: `${agentConfig.pai.provider}/${agentConfig.pai.model}`,
                   running: runningAgentIds.has(entry.name),
-                  inbox_events: inbox?.eventCount ?? '?',
                   ...(runtime ?? {}),
                 })
               } catch {
@@ -198,8 +164,7 @@ export function createStatusCommand(): Command {
                 const id = String(agent['id']).padEnd(colW)
                 const kind = String(agent['kind']).padEnd(8)
                 const provider = String(agent['provider'])
-                const inbox = `inbox:${agent['inbox_events']}`
-                console.log(`  ${id}${kind}${status.padEnd(10)}${provider.padEnd(30)}${inbox}`)
+                console.log(`  ${id}${kind}${status.padEnd(10)}${provider}`)
               }
             }
           }

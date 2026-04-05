@@ -146,28 +146,16 @@ async function deliverToAgent(
   const source = `internal:agent:${convId}:${selfAgentId}`
   const targetStr = `agent:${agentId}`
 
-  // 2. Build task context injected into the worker's system prompt
-  const taskContext = [
-    '[Task Assignment]',
-    `You are handling a delegated task from agent:${selfAgentId}.`,
-    'Complete the task and return your result as plain text.',
-    'Do NOT use send_message to contact external peers — the framework will deliver your result automatically.',
-    'Do NOT pretend to be the orchestrator.',
-    'Your text response will be automatically reported back to the orchestrator.',
-  ].join('\n')
-
-  // 3. Send to agent — set reply_to so the run-loop auto-announces the result back
+  // 2. Send to agent — pure fire-and-forget, no reply_to or task_context injected
   const delivered = sendToAgent(agentId, {
     source,
     content,
-    task_context: taskContext,
-    reply_to: `agent:${selfAgentId}`,
   })
   if (!delivered) {
     return { status: 'error', message: 'agent not running' }
   }
 
-  // 4. Write thread record
+  // 3. Write thread record
   try {
     await threadStore.push({
       source: 'self',
@@ -187,16 +175,14 @@ async function deliverToAgent(
 export function createSendMessageTool(deps: SendMessageDeps): Tool {
   return {
     name: 'send_message',
-    description: `Send a message to a peer or agent outside the normal streaming reply.
+    description: `Send a message to a peer or agent (fire-and-forget).
 Use this when you need to:
 - Send a message to a different target than the current conversation peer
 - Send an intermediate notification before your main reply
-- Dispatch a task to another agent
 - Send progress updates during a long task
 Your normal text response is automatically streamed to the current peer —
 you don't need send_message for that.
-When dispatching to an agent, your result will be automatically reported back
-to you — the worker does not need to call send_message to reply.`,
+To delegate work to an agent and wait for results, use create_task instead.`,
     parameters: {
       type: 'object',
       properties: {

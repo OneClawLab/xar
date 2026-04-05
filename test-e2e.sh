@@ -347,7 +347,7 @@ section "15d. a2a — prime worker with secret number 8754"
 # delegated question will also land in.
 A2A_CONV_ID="a2a-conv-$$"
 WORKER_PRIME_SOURCE="internal:agent:${A2A_CONV_ID}:${AID}"
-WORKER_ORCH_SESS="${AGENT_B_DIR}/sessions/peers/${AID}.jsonl"
+WORKER_ORCH_SESS="${AGENT_B_DIR}/sessions/internal/${A2A_CONV_ID}.jsonl"
 
 run_cmd $XAR send "$AID_B" \
   "Remember this number: 8754. Use send_message(target='agent:${AID}', content='Stored 8754') to confirm." \
@@ -366,7 +366,7 @@ assert_exit0
 assert_contains "8754"
 
 # Wait for orchestrator to receive the prime confirmation (so its queue is clear)
-ORCH_WORKER_SESS="${AGENT_DIR}/sessions/peers/${AID_B}.jsonl"
+ORCH_WORKER_SESS="${AGENT_DIR}/sessions/internal/${A2A_CONV_ID}.jsonl"
 wait_for "orchestrator received prime confirmation" 30 \
   'test -s "$ORCH_WORKER_SESS" 2>/dev/null' \
   -- "tail -10 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID}.log 2>/dev/null || echo 'no orch log'"

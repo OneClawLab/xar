@@ -7,6 +7,7 @@ import fc from 'fast-check'
 import { splitTarget, findPeerSource, createSendMessageTool } from '../../src/agent/send-message.js'
 import type { ThreadEvent } from 'thread'
 import type { SendMessageDeps } from '../../src/agent/send-message.js'
+import type { InboundMessage } from '../../src/types.js'
 import type { IpcConnection } from '../../src/ipc/types.js'
 import type { IpcMessage } from '../../src/types.js'
 
@@ -147,5 +148,58 @@ describe('send_message Property Tests', () => {
         { numRuns: 100 },
       )
     })
+  })
+})
+
+// ── Property 9 ───────────────────────────────────────────────────────────────
+
+// Feature: communication-refactor, Property 9: send_message 纯净性
+// Validates: Requirements 8.1, 8.4
+describe('Property 9: send_message purity — no reply_to or task_context injected', () => {
+  it('InboundMessage delivered to agent contains only source and content', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        safeIdArb,   // selfAgentId
+        safeIdArb,   // targetAgentId
+        safeIdArb,   // convId
+        fc.string({ minLength: 1, maxLength: 100 }), // content
+        async (selfAgentId, targetAgentId, convId, content) => {
+          // Capture the message passed to sendToAgent
+          let captured: InboundMessage | undefined
+
+          const mockThreadStore = {
+            peek: async () => [],
+            push: async () => ({ id: 1, source: 'self', type: 'record' as const, subtype: null, content: '', created_at: '' }),
+          }
+
+          const deps: SendMessageDeps = {
+            agentId: selfAgentId,
+            threadStore: mockThreadStore as never,
+            ipcConn: undefined,
+            sendToAgent: (_id: string, msg: InboundMessage) => {
+              captured = msg
+              return true
+            },
+            convId,
+            logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as never,
+            nextStreamSeq: () => 1,
+          }
+
+          const tool = createSendMessageTool(deps)
+          await (tool.handler as (args: unknown) => Promise<unknown>)(
+            { target: `agent:${targetAgentId}`, content }
+          )
+
+          expect(captured).toBeDefined()
+          // Must NOT have reply_to or task_context
+          expect(captured).not.toHaveProperty('reply_to')
+          expect(captured).not.toHaveProperty('task_context')
+          // Must have source and content
+          expect(captured?.source).toMatch(/^internal:/)
+          expect(captured?.content).toBe(content)
+        },
+      ),
+      { numRuns: 100 },
+    )
   })
 })

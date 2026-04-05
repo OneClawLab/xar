@@ -8,17 +8,23 @@
  */
 
 import type { Pai } from 'pai'
+import type { AgentConfig } from './types.js'
 import type { InboundMessage, OutboundTarget } from '../types.js'
 import type { AsyncQueue } from './queue.js'
 import { loadAgentConfig } from './config.js'
-import { routeMessage, determineThreadId, parseSource, extractConvId } from './router.js'
+import { routeMessage, determineThreadId, determineEventType, parseSource, extractConvId } from './router.js'
 import { buildContext } from './context.js'
+import type { TaskSummaryContext } from './context.js'
 import { Deliver } from './deliver.js'
 import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
 import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
 import { processTurn } from './turn.js'
-import { createSendMessageTool, splitTarget, findPeerSource } from './send-message.js'
+import { createSendMessageTool, splitTarget } from './send-message.js'
+import { createCreateTaskTool } from './create-task.js'
+import { createCancelTaskTool } from './cancel-task.js'
+import { TaskManager } from './task-manager.js'
+import { MidTurnInjector } from './mid-turn.js'
 import { getDaemonConfig } from '../config.js'
 import { join } from 'path'
 
@@ -58,6 +64,8 @@ export class RunLoopImpl implements RunLoop {
   private inflight = new Set<Promise<void>>()
   /** Per-agent monotonic counter for stream_id uniqueness */
   private streamSeq = 0
+  /** Task manager instance (lazy-initialized) */
+  private taskManager: TaskManager | null = null
 
   constructor(
     private agentId: string,
@@ -67,9 +75,7 @@ export class RunLoopImpl implements RunLoop {
     private pai: Pai,
     logger?: Logger,
     /**
-     * Optional callback for agent-to-agent reply routing.
-     * When a worker finishes processing an internal message, its assistant reply
-     * is automatically delivered back to the sender agent via this callback.
+     * Optional callback for agent-to-agent message routing.
      * Provided by the Daemon so the run-loop doesn't need to know about the
      * full agent registry.
      */
@@ -93,13 +99,13 @@ export class RunLoopImpl implements RunLoop {
         if (this.stopped) break
 
         try {
-          // Determine thread key so same-thread messages stay serial
+          // Load config once here — processMessage reuses it via parameter
           const config = await loadAgentConfig(this.agentId, getDaemonConfig().theClawHome)
           const threadId = determineThreadId(config, msg.source)
 
           // Chain onto the per-thread lock (serial within thread, concurrent across threads)
           const prev = this.threadLocks.get(threadId) ?? Promise.resolve()
-          const task = prev.then(() => this.processMessage(msg)).catch((err) => {
+          const task = prev.then(() => this.processMessage(msg, config)).catch((err) => {
             const errorMsg = err instanceof Error ? err.message : String(err)
             this.logger.error(`Error processing message: ${errorMsg}`)
           })
@@ -125,6 +131,14 @@ export class RunLoopImpl implements RunLoop {
   async stop(): Promise<void> {
     this.stopped = true
     this.queue.close()
+  }
+
+  private getTaskManager(): TaskManager {
+    if (!this.taskManager) {
+      const theClawHome = getDaemonConfig().theClawHome
+      this.taskManager = new TaskManager(this.agentId, theClawHome)
+    }
+    return this.taskManager
   }
 
   private getConn(): IpcConnection | undefined {
@@ -161,245 +175,423 @@ export class RunLoopImpl implements RunLoop {
     return `${target.channel_id}:${target.conversation_id}:${this.streamSeq}`
   }
 
-  private async processMessage(msg: InboundMessage): Promise<void> {
+  /**
+   * Wrap sendToAgent to return a Promise<void> as required by create/cancel task tools.
+   */
+  private makeSendToAgentAsync(): (agentId: string, message: InboundMessage) => Promise<void> {
+    return async (targetAgentId: string, message: InboundMessage): Promise<void> => {
+      if (this.sendToAgent) {
+        const delivered = this.sendToAgent(targetAgentId, message)
+        if (!delivered) {
+          this.logger.warn(`sendToAgent: agent ${targetAgentId} not running`)
+        }
+      } else {
+        this.logger.warn(`sendToAgent: no sendToAgent callback available`)
+      }
+    }
+  }
+
+  /**
+   * Execute a Turn (LLM call) and write results to thread.
+   * Returns the new messages produced.
+   */
+  private async executeTurn(params: {
+    msg: InboundMessage
+    config: AgentConfig
+    threadStore: Awaited<ReturnType<typeof routeMessage>>
+    threadId: string
+    taskContext?: TaskSummaryContext
+    originEventId?: number
+    replyTarget?: string
+  }): Promise<any[]> {
+    const { msg, config, threadStore, threadId, taskContext, originEventId, replyTarget } = params
+    const theClawHome = getDaemonConfig().theClawHome
+    const providerInfo = await this.pai.getProviderInfo(config.pai.provider)
+    const agentDir = join(theClawHome, 'agents', this.agentId)
+    const sessionFile = join(agentDir, 'sessions', `${threadId}.jsonl`)
+
+    const availableAgents = this.getRunningAgents?.() ?? []
+    const chatInput = await buildContext(
+      this.agentId, config, threadStore, msg, threadId, availableAgents, taskContext,
+    )
+    this.logger.debug('LLM context built')
+
+    const isInternal = parseSource(msg.source).kind === 'internal'
+    const target = this.buildTarget(msg.source)
+    const conn = this.getConn()
+
+    if (!conn && !isInternal) {
+      this.logger.warn(`No IPC connection available for streaming, processing without streaming`)
+    }
+
+    let deliver: Deliver | null = null
+    let streamId = ''
+
+    if (target && !isInternal) {
+      streamId = this.nextStreamId(target)
+      if (conn) {
+        deliver = new Deliver(conn, target)
+      }
+    } else {
+      streamId = `internal:${this.agentId}:${this.streamSeq++}`
+    }
+
+    const chunkWriter = (conn && !isInternal) ? new IpcChunkWriter(conn, streamId) : null
+    const convId = extractConvId(msg.source)
+
+    const extraEnv: Record<string, string> = {
+      XAR_AGENT_ID: this.agentId,
+      XAR_CONV_ID: convId,
+    }
+
+    const sendToAgentAsync = this.makeSendToAgentAsync()
+    const taskManager = this.getTaskManager()
+
+    // Determine origin event id and reply target for create_task
+    // originEventId comes from the thread's last event (the inbound message we just pushed)
+    const currentOriginEventId = originEventId ?? 0
+    const currentReplyTarget = replyTarget ?? ''
+
+    const sendMessageTool = createSendMessageTool({
+      agentId: this.agentId,
+      threadStore,
+      ipcConn: conn,
+      sendToAgent: this.sendToAgent,
+      convId,
+      logger: this.logger,
+      nextStreamSeq: () => ++this.streamSeq,
+    })
+
+    const createTaskTool = createCreateTaskTool({
+      taskManager,
+      agentId: this.agentId,
+      originThreadId: threadId,
+      originEventId: currentOriginEventId,
+      replyTarget: currentReplyTarget,
+      sendToAgent: sendToAgentAsync,
+    })
+
+    const cancelTaskTool = createCancelTaskTool({
+      taskManager,
+      agentId: this.agentId,
+      sendToAgent: sendToAgentAsync,
+    })
+
+    // Mid-turn injector for checking new Human messages during tool call loop
+    const midTurnInjector = new MidTurnInjector(threadStore)
+
+    const result = await processTurn({
+      chatInput,
+      pai: this.pai,
+      provider: config.pai.provider,
+      model: config.pai.model,
+      stream: true,
+      tokenWriter: chunkWriter,
+      sessionFile,
+      agentDir,
+      threadId,
+      contextWindow: providerInfo.contextWindow,
+      maxOutputTokens: providerInfo.maxTokens,
+      maxAttempts: config.retry.max_attempts,
+      logger: this.logger,
+      extraEnv,
+      extraTools: [sendMessageTool, createTaskTool, cancelTaskTool],
+      midTurnInjector,
+      callbacks: {
+        onCompactStart: (reason) => deliver?.streamCompactStart(streamId, reason),
+        onCompactEnd: (before, after) => deliver?.streamCompactEnd(streamId, before, after),
+        onCtxUsage: (total, budget, _pct) => deliver?.streamCtxUsage(streamId, total, budget),
+        onStreamStart: () => deliver?.streamStart(streamId),
+        onStreamEnd: () => deliver?.streamEnd(streamId),
+        onStreamError: (error) => deliver?.streamError(streamId, error),
+        onThinkingDelta: (delta) => deliver?.streamThinking(streamId, delta),
+        onToolCall: (tc) => deliver?.streamToolCall(streamId, tc),
+        onToolResult: (tr) => deliver?.streamToolResult(streamId, tr),
+      },
+    })
+
+    // Write LLM response records to thread
+    const threadEvents = result.newMessages.map((m: any) => {
+      const serialized = JSON.stringify({
+        content: m.content,
+        ...(m.tool_calls !== undefined && { tool_calls: m.tool_calls }),
+        ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
+        ...(m.name !== undefined && { name: m.name }),
+      })
+      return {
+        source: m.role === 'assistant' ? 'self' : `tool:${m.name ?? ''}`,
+        type: 'record' as const,
+        ...(m.role === 'tool' ? { subtype: 'toolcall' } : {}),
+        content: serialized,
+      }
+    })
+    await threadStore.pushBatch(threadEvents)
+    this.logger.info(`Turn completed: stream=${streamId} records=${threadEvents.length}`)
+
+    return result.newMessages
+  }
+
+  private async processMessage(msg: InboundMessage, config: AgentConfig): Promise<void> {
     const target = this.buildTarget(msg.source)
     this.logger.info(`Processing message: source=${msg.source}`)
 
-    // Best-effort error reporter
-    let deliver: Deliver | null = null
-    let streamId = ''
+    const parsed = parseSource(msg.source)
+    const isInternal = parsed.kind === 'internal'
+
     let threadStore: Awaited<ReturnType<typeof routeMessage>> | null = null
 
     try {
-      const theClawHome = getDaemonConfig().theClawHome
-      const config = await loadAgentConfig(this.agentId, theClawHome)
-
-      // Route message to appropriate thread
       threadStore = await routeMessage(this.agentId, config, msg)
       const threadId = determineThreadId(config, msg.source)
       this.logger.info(`Message routed: thread=${threadId}`)
 
-      // Determine event type: 'record' messages are context-only (no LLM trigger)
-      const eventType = msg.event_type ?? 'message'
+      // ── Worker Announce path ─────────────────────────────────────────────
+      if (isInternal && !msg.reply_to && parsed.conversation_type === 'task') {
+        const handled = await this.handleWorkerAnnounce(msg, config, parsed, threadStore)
+        if (handled) return
+        // No matching task — fall through to normal LLM processing (participant)
+      }
 
-      // Write inbound message to thread
-      await threadStore.push({
+      await this.handleNormalTurn(msg, config, parsed, threadStore, threadId, isInternal)
+
+    } catch (err) {
+      await this.handleProcessingError(err, msg, target, threadStore)
+    }
+  }
+
+  /**
+   * Handle a worker announce message (internal, no reply_to, conv_type=task).
+   * Returns true if the message was fully handled (caller should return),
+   * false if no matching task was found and the message should fall through.
+   */
+  private async handleWorkerAnnounce(
+    msg: InboundMessage,
+    config: AgentConfig,
+    parsed: ReturnType<typeof parseSource>,
+    threadStore: Awaited<ReturnType<typeof routeMessage>>,
+  ): Promise<boolean> {
+    const convId = parsed.conversation_id ?? ''
+    const workerAgentId = parsed.sender_agent_id ?? ''
+    const failed = msg.content.startsWith('[Task failed]')
+    const taskManager = this.getTaskManager()
+
+    // convId is the task_id directly (set by create-task: convId = task.task_id)
+    const existingTask = convId ? await taskManager.getTask(convId) : null
+    const matchedTaskId = existingTask?.task_id ?? null
+
+    if (!matchedTaskId) {
+      this.logger.info(`No matching task for announce from ${workerAgentId}, treating as participant message`)
+      return false
+    }
+
+    const isCancelled = await taskManager.isTaskCancelled(matchedTaskId)
+    if (isCancelled) {
+      this.logger.info(`Discarding announce for cancelled task: ${matchedTaskId}`)
+      return true
+    }
+
+    await threadStore.push({ source: msg.source, type: 'record', subtype: 'announce', content: msg.content })
+
+    const announceResult = await taskManager.handleAnnounce(matchedTaskId, workerAgentId, msg.content, failed)
+    this.logger.info(`Worker announce handled: task=${matchedTaskId} worker=${workerAgentId} completed=${announceResult.taskCompleted}`)
+
+    if (announceResult.taskCompleted) {
+      const task = announceResult.task
+      const subtaskResults = task.subtasks.map((st) => ({
+        worker: st.worker,
+        instruction: st.instruction,
+        ...(st.result !== undefined ? { result: st.result } : {}),
+        status: st.status,
+      }))
+
+      const replyToValue = task.origin.reply_target.startsWith('peer:') || task.origin.reply_target.startsWith('agent:')
+        ? task.origin.reply_target
+        : undefined
+      const summaryMsg: InboundMessage = replyToValue !== undefined
+        ? { source: msg.source, content: 'All subtasks completed. Please synthesize the results.', reply_to: replyToValue }
+        : { source: msg.source, content: 'All subtasks completed. Please synthesize the results.' }
+
+      const taskContext: TaskSummaryContext = {
+        hasPendingTasks: false,
+        isSummaryTurn: true,
+        taskId: task.task_id,
+        subtaskResults,
+        replyTarget: task.origin.reply_target,
+      }
+
+      this.logger.info(`Triggering summary Turn for task: ${matchedTaskId}`)
+
+      const originThreadStore = await routeMessage(this.agentId, config, {
         source: msg.source,
-        type: eventType,
-        content: msg.content,
+        content: summaryMsg.content,
       })
 
-      // Record-only messages: store in thread for context but skip LLM processing
-      if (eventType === 'record') {
-        this.logger.info(`Record-only message stored (no LLM): thread=${threadId} source=${msg.source}`)
-        return
-      }
+      const newMessages = await this.executeTurn({
+        msg: summaryMsg,
+        config,
+        threadStore: originThreadStore,
+        threadId: task.origin.thread_id,
+        taskContext,
+        originEventId: task.origin.event_id,
+        replyTarget: task.origin.reply_target,
+      })
 
-      // Load pai config and resolve provider for context window info
-      const providerInfo = await this.pai.getProviderInfo(config.pai.provider)
+      await this.deliverSummaryResult(newMessages, task.origin.reply_target)
+    }
 
-      const agentDir = join(theClawHome, 'agents', this.agentId)
-      const sessionFile = join(agentDir, 'sessions', `${threadId}.jsonl`)
+    return true
+  }
 
-      // Build LLM context
-      const availableAgents = this.getRunningAgents?.() ?? []
-      const chatInput = await buildContext(this.agentId, config, threadStore, msg, threadId, availableAgents)
-      this.logger.debug('LLM context built')
+  /**
+   * Handle a normal turn: determine event type, write to thread, run LLM if needed.
+   * Covers both Worker Turn (internal + reply_to) and External (Human) Turn.
+   */
+  private async handleNormalTurn(
+    msg: InboundMessage,
+    config: AgentConfig,
+    parsed: ReturnType<typeof parseSource>,
+    threadStore: Awaited<ReturnType<typeof routeMessage>>,
+    threadId: string,
+    isInternal: boolean,
+  ): Promise<void> {
+    const eventType = determineEventType(config, msg)
 
-      const isInternal = parseSource(msg.source).kind === 'internal'
+    await threadStore.push({ source: msg.source, type: eventType, content: msg.content })
 
-      // Resolve conn lazily — right before we need it — so we get the
-      // connection state *after* all the async work above (config load,
-      // routing, context build).  An earlier getConn() call could return
-      // a connection that was already closed by the time we reach here.
-      const conn = this.getConn()
-      if (!conn && !isInternal) {
-        this.logger.warn(`No IPC connection available for streaming (active connections: ${this.ipcConnections.size}), processing without streaming`)
-      }
-      this.logger.debug(`Using IPC connection: ${conn?.id ?? 'none'}`)
+    if (eventType === 'record') {
+      this.logger.info(`Record-only message stored (no LLM): thread=${threadId} source=${msg.source}`)
+      return
+    }
 
-      // Build stream_id and delivery objects
-      // Internal messages: suppress Deliver and IpcChunkWriter (no implicit outbound streaming)
-      // LLM response still gets written to thread below.
-      if (target && !isInternal) {
-        streamId = this.nextStreamId(target)
-        if (conn) {
-          deliver = new Deliver(conn, target)
+    // Peek last event id for create_task origin tracking
+    let originEventId = 0
+    try {
+      const recentEvents = await threadStore.peek({ lastEventId: 0, limit: 10000 })
+      originEventId = recentEvents[recentEvents.length - 1]?.id ?? 0
+    } catch {
+      // non-fatal
+    }
+
+    const replyTarget = parsed.kind === 'external' && parsed.peer_id
+      ? `peer:${parsed.peer_id}`
+      : parsed.kind === 'internal' && parsed.sender_agent_id
+        ? `agent:${parsed.sender_agent_id}`
+        : ''
+
+    // ── Worker Turn: internal message with reply_to ──────────────────────
+    if (isInternal && msg.reply_to) {
+      const newMessages = await this.executeTurn({ msg, config, threadStore, threadId, originEventId, replyTarget })
+      await this.announceWorkerResult(newMessages, msg.reply_to, msg.source)
+      return
+    }
+
+    // ── External (Human) Turn ────────────────────────────────────────────
+    await this.executeTurn({ msg, config, threadStore, threadId, originEventId, replyTarget })
+  }
+
+  /**
+   * Auto-announce worker Turn result back to the orchestrator.
+   */
+  private async announceWorkerResult(newMessages: any[], replyTo: string, source: string): Promise<void> {
+    const assistantText = extractAssistantText(newMessages)
+    const [prefix, id] = splitTarget(replyTo)
+
+    if (prefix === 'agent' && this.sendToAgent) {
+      const convId = extractConvId(source)
+      if (assistantText) {
+        const announced = this.sendToAgent(id, {
+          source: `internal:agent:${convId}:${this.agentId}`,
+          content: assistantText,
+          event_type: 'message',
+        })
+        if (announced) {
+          this.logger.info(`Worker announce: ${this.agentId} → ${id} (${assistantText.length} chars)`)
+        } else {
+          this.logger.warn(`Worker announce failed: agent ${id} not running`)
         }
       } else {
-        streamId = `internal:${this.agentId}:${this.streamSeq++}`
+        this.logger.info(`Worker Turn produced no assistant text, skipping announce to ${id}`)
       }
+    }
+  }
 
-      const chunkWriter = (conn && !isInternal) ? new IpcChunkWriter(conn, streamId) : null
+  /**
+   * Centralised error handler for processMessage.
+   */
+  private async handleProcessingError(
+    err: unknown,
+    msg: InboundMessage,
+    target: OutboundTarget | null,
+    threadStore: Awaited<ReturnType<typeof routeMessage>> | null,
+  ): Promise<void> {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    this.logger.error(`Message processing failed: ${errorMsg}`)
 
-      const convId = extractConvId(msg.source)
-      const extraEnv: Record<string, string> = {
-        XAR_AGENT_ID: this.agentId,
-        XAR_CONV_ID: convId,
-      }
-
-      const sendMessageTool = createSendMessageTool({
-        agentId: this.agentId,
-        threadStore,
-        ipcConn: conn,
-        sendToAgent: this.sendToAgent,
-        convId,
-        logger: this.logger,
-        nextStreamSeq: () => ++this.streamSeq,
-      })
-
-      const result = await processTurn({
-        chatInput,
-        pai: this.pai,
-        provider: config.pai.provider,
-        model: config.pai.model,
-        stream: true,
-        tokenWriter: chunkWriter,
-        sessionFile,
-        agentDir,
-        threadId,
-        contextWindow: providerInfo.contextWindow,
-        maxOutputTokens: providerInfo.maxTokens,
-        maxAttempts: config.retry.max_attempts,
-        logger: this.logger,
-        extraEnv,
-        extraTools: [sendMessageTool],
-        callbacks: {
-          onCompactStart: (reason) => deliver?.streamCompactStart(streamId, reason),
-          onCompactEnd: (before, after) => deliver?.streamCompactEnd(streamId, before, after),
-          onCtxUsage: (total, budget, _pct) => deliver?.streamCtxUsage(streamId, total, budget),
-          onStreamStart: () => deliver?.streamStart(streamId),
-          onStreamEnd: () => deliver?.streamEnd(streamId),
-          onStreamError: (error) => deliver?.streamError(streamId, error),
-          onThinkingDelta: (delta) => deliver?.streamThinking(streamId, delta),
-          onToolCall: (tc) => deliver?.streamToolCall(streamId, tc),
-          onToolResult: (tr) => deliver?.streamToolResult(streamId, tr),
-        },
-      })
-
-      // Write LLM response records to thread
-      const threadEvents = result.newMessages.map((m: any) => {
-        const serialized = JSON.stringify({
-          content: m.content,
-          ...(m.tool_calls !== undefined && { tool_calls: m.tool_calls }),
-          ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
-          ...(m.name !== undefined && { name: m.name }),
-        })
-        return {
-          source: m.role === 'assistant' ? 'self' : `tool:${m.name ?? ''}`,
-          type: 'record' as const,
-          ...(m.role === 'tool' ? { subtype: 'toolcall' } : {}),
-          content: serialized,
-        }
-      })
-      await threadStore.pushBatch(threadEvents)
-      this.logger.info(`Message processed successfully: stream=${streamId} records=${threadEvents.length}`)
-
-      // ── reply_to: auto-deliver result to the requested target ────────────
-      // Only triggered when the inbound message carried a reply_to address.
-      // The outgoing message does NOT carry reply_to, so the chain terminates
-      // after one hop — preventing infinite ping-pong loops between agents.
-      if (msg.reply_to) {
-        const assistantText = extractAssistantText(result.newMessages)
-        if (assistantText) {
-          const [prefix, id] = splitTarget(msg.reply_to)
-
-          if (prefix === 'agent' && this.sendToAgent) {
-            const replySource = `internal:agent:${convId}:${this.agentId}`
-            const announced = this.sendToAgent(id, {
-              source: replySource,
-              content: assistantText,
-              event_type: 'message',
-              // intentionally no reply_to — chain terminates here
-            })
-            if (announced) {
-              this.logger.info(`Auto-announce: ${this.agentId} → ${id} (${assistantText.length} chars)`)
-            } else {
-              this.logger.warn(`Auto-announce failed: agent ${id} not running`)
-            }
-          } else if (prefix === 'peer' && conn) {
-            // Deliver directly to peer — look up full OutboundTarget from thread history
-            try {
-              const events = await threadStore.peek({ lastEventId: 0, limit: 2000 })
-              const peerSource = findPeerSource(events, id)
-              if (peerSource) {
-                const parsed = parseSource(peerSource)
-                if (parsed.channel_id && parsed.peer_id && parsed.conversation_id) {
-                  const peerTarget = {
-                    channel_id: parsed.channel_id,
-                    peer_id: parsed.peer_id,
-                    conversation_id: parsed.conversation_id,
-                  }
-                  const seq = ++this.streamSeq
-                  const peerStreamId = `${peerTarget.channel_id}:${peerTarget.conversation_id}:${seq}`
-                  const peerDeliver = new Deliver(conn, peerTarget)
-                  await peerDeliver.streamStart(peerStreamId)
-                  await peerDeliver.streamToken(peerStreamId, assistantText)
-                  await peerDeliver.streamEnd(peerStreamId)
-                  this.logger.info(`Auto-deliver to peer: ${id} via ${peerTarget.channel_id}`)
-                }
-              } else {
-                this.logger.warn(`Auto-deliver to peer failed: peer ${id} not found in thread history`)
-              }
-            } catch (err) {
-              this.logger.warn(`Auto-deliver to peer failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
-            }
-          }
-        }
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
-      this.logger.error(`Message processing failed: ${errorMsg}`)
-
-      // Persist error record to thread (if thread was opened)
-      if (threadStore) {
-        try {
-          await threadStore.push({
-            source: 'self',
-            type: 'record',
-            subtype: 'error',
-            content: errorMsg,
-          })
-        } catch {
-          this.logger.error('Failed to write error record to thread')
-        }
-      }
-
-      // For internal messages: notify the sender agent that the task failed.
-      // Without this, the orchestrator would wait forever for a result that never comes.
-      if (msg.reply_to) {
-        const [prefix, id] = splitTarget(msg.reply_to)
-        if (prefix === 'agent' && this.sendToAgent) {
-          const convId = extractConvId(msg.source)
-          const failureNotice = `[Task failed] Agent ${this.agentId} encountered an error: ${errorMsg}`
-          const announced = this.sendToAgent(id, {
-            source: `internal:agent:${convId}:${this.agentId}`,
-            content: failureNotice,
-            event_type: 'message',
-          })
-          if (!announced) {
-            this.logger.warn(`Failed to notify agent ${id} of task failure`)
-          }
-        }
-      }
-
-      // Try to notify the external client (for external messages)
+    if (threadStore) {
       try {
-        if (deliver) {
-          await deliver.streamError(streamId, errorMsg)
-        } else if (target) {
-          const conn = this.getConn()
-          if (conn) {
-            await conn.send({
-              type: 'stream_error',
-              stream_id: streamId || `error:${this.agentId}:${Date.now()}`,
-              error: errorMsg,
-            })
-          }
-        }
+        await threadStore.push({ source: 'self', type: 'record', subtype: 'error', content: errorMsg })
       } catch {
-        this.logger.error('Failed to send error notification to client')
+        this.logger.error('Failed to write error record to thread')
       }
+    }
+
+    if (msg.reply_to) {
+      const [prefix, id] = splitTarget(msg.reply_to)
+      if (prefix === 'agent' && this.sendToAgent) {
+        const convId = extractConvId(msg.source)
+        const failureNotice = `[Task failed] Agent ${this.agentId} encountered an error: ${errorMsg}`
+        const announced = this.sendToAgent(id, {
+          source: `internal:task:${convId}:${this.agentId}`,
+          content: failureNotice,
+          event_type: 'message',
+        })
+        if (!announced) {
+          this.logger.warn(`Failed to notify agent ${id} of task failure`)
+        }
+      }
+    }
+
+    try {
+      if (target) {
+        const conn = this.getConn()
+        if (conn) {
+          await conn.send({ type: 'stream_error', stream_id: `error:${this.agentId}:${Date.now()}`, error: errorMsg })
+        }
+      }
+    } catch {
+      this.logger.error('Failed to send error notification to client')
+    }
+  }
+
+  /**
+   * Deliver summary Turn result to the reply_target (peer or agent).
+   * Used after an orchestrator summary Turn completes.
+   */
+  private async deliverSummaryResult(
+    newMessages: any[],
+    replyTarget: string,
+  ): Promise<void> {
+    const assistantText = extractAssistantText(newMessages)
+    if (!assistantText) return
+
+    const [prefix, id] = splitTarget(replyTarget)
+
+    if (prefix === 'agent' && this.sendToAgent) {
+      const announced = this.sendToAgent(id, {
+        source: `internal:agent:${this.agentId}:${this.agentId}`,
+        content: assistantText,
+        event_type: 'message',
+      })
+      if (announced) {
+        this.logger.info(`Summary delivered to agent: ${id} (${assistantText.length} chars)`)
+      } else {
+        this.logger.warn(`Summary delivery failed: agent ${id} not running`)
+      }
+    } else if (prefix === 'peer') {
+      // Summary delivery to a peer requires an OutboundTarget (channel + conversation context)
+      // which is not available at this point — the summary turn has no channel context.
+      // Log a warning and skip; the orchestrator's normal stream response handles peer delivery.
+      this.logger.warn(`Summary delivery to peer ${id} skipped: no channel context available for peer delivery from summary turn`)
     }
   }
 }

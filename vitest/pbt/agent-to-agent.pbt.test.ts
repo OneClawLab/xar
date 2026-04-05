@@ -14,12 +14,12 @@ import type { AgentConfig } from '../../src/agent/types.js'
 const segmentArb = fc.stringMatching(/^[a-z0-9-]+$/).filter((s) => s.length >= 1)
 
 // Minimal AgentConfig for a given routing mode
-function makeConfig(routing: 'per-peer' | 'per-conversation' | 'per-agent'): AgentConfig {
+function makeConfig(routing: 'reactive' | 'autonomous'): AgentConfig {
   return {
     agent_id: 'test',
     kind: 'user',
     pai: { provider: 'openai', model: 'gpt-4o' },
-    routing: { default: routing },
+    routing: { mode: routing, trigger: 'mention' },
     memory: { compact_threshold_tokens: 8000, session_compact_threshold_tokens: 4000 },
     retry: { max_attempts: 3 },
   }
@@ -89,9 +89,8 @@ describe('agent-to-agent PBT', () => {
    */
   it('Feature: agent-to-agent, Property 3: internal source thread routing', () => {
     const routingModeArb = fc.oneof(
-      fc.constant('per-peer' as const),
-      fc.constant('per-conversation' as const),
-      fc.constant('per-agent' as const),
+      fc.constant('reactive' as const),
+      fc.constant('autonomous' as const),
     )
 
     fc.assert(
@@ -108,15 +107,8 @@ describe('agent-to-agent PBT', () => {
           // Determinism
           if (threadId1 !== threadId2) return false
 
-          // Correctness per routing mode
-          switch (routingMode) {
-            case 'per-peer':
-              return threadId1 === `peers/${senderAgentId}`
-            case 'per-conversation':
-              return threadId1 === `conversations/${convId}`
-            case 'per-agent':
-              return threadId1 === 'main'
-          }
+          // Internal messages always route to internal/<convId> regardless of mode
+          return threadId1 === `internal/${convId}`
         },
       ),
       { numRuns: 100 },

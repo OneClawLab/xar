@@ -18,11 +18,8 @@ describe('Configuration Validation Property Tests', () => {
       model: fc.string({ minLength: 1 }),
     }),
     routing: fc.record({
-      default: fc.oneof(
-        fc.constant('per-peer'),
-        fc.constant('per-conversation'),
-        fc.constant('per-agent'),
-      ),
+      mode: fc.oneof(fc.constant('reactive'), fc.constant('autonomous')),
+      trigger: fc.oneof(fc.constant('mention'), fc.constant('all')),
     }),
     memory: fc.record({
       compact_threshold_tokens: fc.integer({ min: 1 }),
@@ -59,7 +56,8 @@ describe('Configuration Validation Property Tests', () => {
             model: fc.string(),
           }),
           routing: fc.record({
-            default: fc.string(),
+            mode: fc.string(),
+            trigger: fc.string(),
           }),
           memory: fc.record({
             compact_threshold_tokens: fc.integer(),

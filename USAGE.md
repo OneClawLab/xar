@@ -191,7 +191,7 @@ Agent:    my-agent (user)
 Dir:      ~/.theclaw/agents/my-agent
 Status:   stopped
 Provider: my-azure / gpt-5.2
-Routing:  per-peer
+Routing:  reactive/mention
 Inbox:    0 events (last: never)
 Sessions: 0 session file(s)
 ```
@@ -268,7 +268,8 @@ Located at `~/.theclaw/agents/<id>/config.json`:
     "model": "gpt-5.2"
   },
   "routing": {
-    "default": "per-peer"
+    "mode": "reactive",
+    "trigger": "mention"
   },
   "memory": {
     "compact_threshold_tokens": 8000,
@@ -282,20 +283,19 @@ Located at `~/.theclaw/agents/<id>/config.json`:
 
 ### Routing modes
 
-**per-peer** (default)
-- One thread per peer, regardless of session
-- All conversations with a peer go to the same thread
-- Good for maintaining context across sessions
+**reactive** (default)
+- Agent responds to messages that directly address it
+- `trigger: "mention"` — only respond when explicitly mentioned in group chats; always respond in DMs
+- `trigger: "all"` — respond to all messages in any conversation
+- Thread isolation: DMs use `peers/<peer_id>`, group chats use `conversations/<conv_id>/peers/<peer_id>`
 
-**per-session**
-- One thread per session
-- Each session has its own conversation thread
-- Good for isolated conversations
+**autonomous**
+- Agent receives all messages and decides whether to respond (empty response = silence)
+- All messages share a per-conversation thread: `conversations/<conv_id>`
+- Good for agents that monitor conversations and interject selectively
 
-**per-agent**
-- Single thread for entire agent
-- All messages go to the same thread
-- Good for simple agents with single conversation
+**override** (optional)
+- `routing.override: { "<conv_id>": "<custom_thread_path>" }` — override thread routing for specific conversations
 
 ### Memory settings
 
@@ -373,7 +373,7 @@ xar init my-agent
 nano ~/.theclaw/agents/my-agent/config.json
 
 # Change routing mode
-# "routing": { "default": "per-session" }
+# "routing": { "mode": "autonomous", "trigger": "all" }
 
 # Change LLM model
 # "pai": { "model": "gpt-4-turbo" }

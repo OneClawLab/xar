@@ -9,10 +9,12 @@
 import { createBashExecTool } from 'pai'
 import type { ChatInput, Message, Tool, Pai } from 'pai'
 import type { Writable } from 'node:stream'
+import type { MessageWithToolCalls } from '../types.js'
 import { compactSession } from './memory.js'
 import { estimateTokens, loadSessionMessages, writeSessionMessages } from './session.js'
 import type { SessionMessage } from './session.js'
 import type { Logger } from '../logging.js'
+import type { MidTurnInjector } from './mid-turn.js'
 import { promises as fs } from 'node:fs'
 import { dirname } from 'node:path'
 
@@ -63,6 +65,8 @@ export interface TurnParams {
   extraTools?: Tool[]
   /** Extra environment variables to inject into bash_exec tool */
   extraEnv?: Record<string, string> | undefined
+  /** Optional mid-turn injector: checks for new Human messages after each tool call */
+  midTurnInjector?: MidTurnInjector | undefined
 }
 
 export interface TurnResult {
@@ -107,7 +111,7 @@ export function computeInputBudget(contextWindow?: number, maxOutputTokens?: num
 export async function processTurn(params: TurnParams): Promise<TurnResult> {
   const {
     chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId,
-    maxAttempts, logger, callbacks, extraTools, extraEnv,
+    maxAttempts, logger, callbacks, extraTools, extraEnv, midTurnInjector,
   } = params
 
   const { contextWindow: cw, maxOutputTokens: mo, inputBudget } = computeInputBudget(
@@ -159,11 +163,24 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
 
     const controller = new AbortController()
 
+    // Mid-turn injection state: messages to prepend to the next LLM call's history
+    let midTurnInjections: Message[] = []
+    let lastCheckedEventId = 0
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         logger.info(`LLM call: attempt=${attempt + 1}/${maxAttempts} provider=${provider} model=${model}`)
 
-        for await (const event of pai.chat(chatInput, { provider, model, stream: stream ?? true }, tokenWriter, tools, controller.signal)) {
+        // Build effective chatInput: append any mid-turn injections to history
+        const effectiveChatInput: ChatInput = midTurnInjections.length > 0
+          ? {
+              ...chatInput,
+              history: [...(chatInput.history ?? []), ...newMessages, ...midTurnInjections],
+              userMessage: '',
+            }
+          : chatInput
+
+        for await (const event of pai.chat(effectiveChatInput, { provider, model, stream: stream ?? true }, tokenWriter, tools, controller.signal)) {
           if (event.type === 'thinking_delta') {
             await callbacks.onThinkingDelta(event.delta)
           }
@@ -172,12 +189,33 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
           }
           if (event.type === 'tool_result') {
             await callbacks.onToolResult(event.result)
+            // Mid-turn injection: check for new Human messages after each tool call
+            if (midTurnInjector) {
+              try {
+                const injection = await midTurnInjector.checkAndInject(lastCheckedEventId)
+                if (injection) {
+                  midTurnInjections = [...midTurnInjections, ...injection.messages]
+                  lastCheckedEventId = injection.newLastCheckedId
+                  logger.info(`Mid-turn injection: ${injection.messages.length} messages injected`)
+                }
+              } catch {
+                // Non-fatal: skip injection on error
+              }
+            }
           }
           if (event.type === 'chat_end') {
             for (const m of event.newMessages) {
               newMessages.push(m)
             }
           }
+        }
+
+        // If we have pending mid-turn injections after this LLM call, do another round
+        if (midTurnInjections.length > 0) {
+          midTurnInjections = []
+          // Continue the loop for another LLM call with injected context
+          logger.info(`Mid-turn injections processed, continuing Turn`)
+          continue
         }
 
         logger.info(`LLM call succeeded: attempt=${attempt + 1}`)
@@ -214,14 +252,17 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
         content: typeof chatInput.userMessage === 'string' ? chatInput.userMessage : JSON.stringify(chatInput.userMessage),
         timestamp: new Date().toISOString(),
       }
-      const newSessionMsgs: SessionMessage[] = newMessages.map((m) => ({
-        role: m.role as SessionMessage['role'],
-        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-        timestamp: new Date().toISOString(),
-        ...(m.name !== undefined && { name: m.name }),
-        ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
-        ...((m as any).tool_calls !== undefined && { tool_calls: (m as any).tool_calls }),
-      }))
+      const newSessionMsgs: SessionMessage[] = newMessages.map((m) => {
+        const mw = m as MessageWithToolCalls
+        return {
+          role: m.role as SessionMessage['role'],
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          timestamp: new Date().toISOString(),
+          ...(m.name !== undefined && { name: m.name }),
+          ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
+          ...(mw.tool_calls !== undefined && { tool_calls: mw.tool_calls }),
+        }
+      })
       await writeSessionMessages(sessionFile, [...existing, userMsg, ...newSessionMsgs])
     } catch (err) {
       logger.warn(`Failed to write session file (non-fatal): ${err instanceof Error ? err.message : String(err)}`)

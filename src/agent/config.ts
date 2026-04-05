@@ -12,7 +12,8 @@ export async function loadAgentConfig(agentId: string, theClawHome: string): Pro
 
   try {
     const data = await fs.readFile(configPath, 'utf-8')
-    const config = JSON.parse(data) as AgentConfig
+    const raw = JSON.parse(data) as Record<string, unknown>
+    const config = raw as unknown as AgentConfig
     validateConfig(config)
     return config
   } catch (err) {
@@ -36,19 +37,25 @@ export function validateConfig(config: AgentConfig): void {
     errors.push('pai.provider and pai.model are required')
   }
 
-  if (!config.routing || !config.routing.default) {
-    errors.push('routing.default is required')
-  }
-
-  if (!['per-peer', 'per-conversation', 'per-agent'].includes(config.routing.default)) {
-    errors.push('routing.default must be "per-peer", "per-conversation", or "per-agent"')
+  if (!config.routing) {
+    errors.push('routing is required')
+  } else {
+    if (!['reactive', 'autonomous'].includes(config.routing.mode)) {
+      errors.push('routing.mode must be "reactive" or "autonomous"')
+    }
+    if (!['mention', 'all'].includes(config.routing.trigger)) {
+      errors.push('routing.trigger must be "mention" or "all"')
+    }
+    if (config.routing.override !== undefined && typeof config.routing.override !== 'object') {
+      errors.push('routing.override must be a Record<string, string> if provided')
+    }
   }
 
   if (!config.memory || typeof config.memory.compact_threshold_tokens !== 'number') {
     errors.push('memory.compact_threshold_tokens is required and must be a number')
   }
 
-  if (typeof config.memory.session_compact_threshold_tokens !== 'number') {
+  if (typeof config.memory?.session_compact_threshold_tokens !== 'number') {
     errors.push('memory.session_compact_threshold_tokens is required and must be a number')
   }
 

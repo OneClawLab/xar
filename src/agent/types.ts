@@ -10,7 +10,9 @@ export interface AgentConfig {
     model: string
   }
   routing: {
-    default: 'per-peer' | 'per-conversation' | 'per-agent'
+    mode: 'reactive' | 'autonomous'
+    trigger: 'mention' | 'all'
+    override?: Record<string, string>
   }
   memory: {
     compact_threshold_tokens: number

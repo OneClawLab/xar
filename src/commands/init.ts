@@ -8,7 +8,6 @@ import { join } from 'path'
 import { getDaemonConfig } from '../config.js'
 import { CliError } from '../types.js'
 import type { AgentConfig } from '../agent/types.js'
-import { getThreadLib } from '../agent/thread-lib.js'
 import { IDENTITY_TEMPLATE } from './identity-template.js'
 
 export function createInitCommand(): Command {
@@ -61,24 +60,17 @@ export function createInitCommand(): Command {
           )
         }
 
-        // Create directory structure (including threads sub-dirs per SPEC)
+        // Create directory structure
         const subdirs = [
           'sessions',
           'memory',
-          'threads/peers',
-          'threads/sessions',
-          'threads/main',
+          'threads',
           'workdir',
           'logs',
         ]
         for (const subdir of subdirs) {
           await fs.mkdir(join(agentDir, subdir), { recursive: true })
         }
-
-        // Initialize inbox thread using thread lib (must be new — throws if exists)
-        const threadLib = getThreadLib()
-        const inboxPath = join(agentDir, 'inbox')
-        await threadLib.init(inboxPath)
 
         // Create IDENTITY.md
         const kind = options.kind === 'system' ? 'system' : 'user'
@@ -99,7 +91,8 @@ export function createInitCommand(): Command {
             model: paiModel,
           },
           routing: {
-            default: 'per-peer',
+            mode: 'reactive',
+            trigger: 'mention',
           },
           memory: {
             compact_threshold_tokens: 8000,

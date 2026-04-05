@@ -69,28 +69,65 @@ export function parseSource(source: string): ParsedSource {
  */
 export function determineThreadId(config: AgentConfig, source: string): string {
   const parsed = parseSource(source)
-  const routing = config.routing.default
 
-  switch (routing) {
-    case 'per-peer': {
-      // One thread per peer
-      const peerId = parsed.peer_id ?? parsed.sender_agent_id ?? 'unknown'
+  // Internal messages always go to per-internal-conv thread
+  if (parsed.kind === 'internal') {
+    const taskId = parsed.conversation_id ?? 'unknown'
+    return `internal/${taskId}`
+  }
+
+  // Check override rules first
+  if (config.routing.override) {
+    const convId = parsed.conversation_id ?? ''
+    const peerId = parsed.peer_id ?? ''
+    const overrideKey = convId || peerId
+    if (overrideKey && config.routing.override[overrideKey]) {
+      return config.routing.override[overrideKey]!
+    }
+  }
+
+  // Derive from mode + conversation_type
+  if (config.routing.mode === 'reactive') {
+    if (parsed.conversation_type === 'dm' || !parsed.conversation_id) {
+      const peerId = parsed.peer_id ?? 'unknown'
       return `peers/${peerId}`
     }
-
-    case 'per-conversation': {
-      // One thread per conversation
-      const convId = parsed.conversation_id ?? 'unknown'
-      return `conversations/${convId}`
-    }
-
-    case 'per-agent':
-      // Single thread for entire agent
-      return 'main'
-
-    default:
-      throw new Error(`Unknown routing mode: ${routing}`)
+    // group / channel: per-conversation-peer
+    const convId = parsed.conversation_id
+    const peerId = parsed.peer_id ?? 'unknown'
+    return `conversations/${convId}/peers/${peerId}`
   }
+
+  // Autonomous: per-conversation
+  const convId = parsed.conversation_id ?? 'unknown'
+  return `conversations/${convId}`
+}
+
+/**
+ * Reconstruct a source string from a ParsedSource object (inverse of parseSource).
+ * Used for round-trip testing (Property 11).
+ */
+export function buildSource(parsed: ParsedSource): string {
+  if (parsed.kind === 'self') {
+    return 'self'
+  }
+
+  if (parsed.kind === 'external') {
+    const channelId = parsed.channel_id ?? 'unknown:unknown'
+    const convType = parsed.conversation_type ?? 'dm'
+    const convId = parsed.conversation_id ?? 'unknown'
+    const peerId = parsed.peer_id ?? 'unknown'
+    return `external:${channelId}:${convType}:${convId}:${peerId}`
+  }
+
+  if (parsed.kind === 'internal') {
+    const convType = parsed.conversation_type ?? 'task'
+    const convId = parsed.conversation_id ?? 'unknown'
+    const sender = parsed.sender_agent_id ?? 'unknown'
+    return `internal:${convType}:${convId}:${sender}`
+  }
+
+  throw new Error(`Unknown source kind: ${String(parsed.kind)}`)
 }
 
 /**
@@ -106,6 +143,39 @@ export function extractConvId(source: string): string {
   } catch {
     return ''
   }
+}
+
+/**
+ * Determine the event_type for an inbound message based on AgentConfig routing settings
+ * and the message's conversation_type + mentioned fields.
+ *
+ * Logic (Property 6):
+ * - reactive + mention trigger + group + mentioned=false → 'record'
+ * - reactive + mention trigger + group + mentioned=true  → 'message'
+ * - reactive + mention trigger + dm (or no conv type)   → 'message' (dm always triggers)
+ * - reactive + all trigger                              → 'message'
+ * - autonomous                                          → 'message' (LLM decides whether to reply)
+ */
+export function determineEventType(
+  config: AgentConfig,
+  msg: { conversation_type?: string; mentioned?: boolean },
+): 'message' | 'record' {
+  if (config.routing.mode === 'autonomous') {
+    return 'message'
+  }
+
+  // reactive mode
+  if (config.routing.trigger === 'all') {
+    return 'message'
+  }
+
+  // reactive + mention trigger
+  const isGroup = msg.conversation_type === 'group' || msg.conversation_type === 'channel'
+  if (isGroup && msg.mentioned === false) {
+    return 'record'
+  }
+
+  return 'message'
 }
 
 /**

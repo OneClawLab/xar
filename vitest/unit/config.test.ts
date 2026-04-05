@@ -16,7 +16,8 @@ describe('Agent Configuration', () => {
       model: 'gpt-4o',
     },
     routing: {
-      default: 'per-peer',
+      mode: 'reactive',
+      trigger: 'mention',
     },
     memory: {
       compact_threshold_tokens: 8000,
@@ -52,7 +53,7 @@ describe('Agent Configuration', () => {
   it('should reject invalid routing mode', () => {
     const config = {
       ...validConfig,
-      routing: { default: 'invalid' as any },
+      routing: { mode: 'invalid' as any, trigger: 'mention' as const },
     }
     expect(() => validateConfig(config)).toThrow(CliError)
   })

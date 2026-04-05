@@ -68,7 +68,7 @@ export function createSendCommand(): Command {
 
         if (response.type === 'ok') {
           console.log(`Message delivered to agent ${id}`)
-        } else {
+        } else if (response.type === 'error') {
           throw new CliError(response.error ?? 'Failed to deliver message', 1)
         }
       } catch (err) {

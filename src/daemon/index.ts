@@ -230,11 +230,6 @@ export class Daemon {
     try {
       switch (message.type) {
         case 'inbound_message': {
-          if (!message.agent_id || !message.message) {
-            this.logger?.warn(`inbound_message malformed: agent_id=${message.agent_id ?? 'missing'} message=${message.message ? 'present' : 'missing'}`)
-            await this.ipcServer.sendToConnection(connId, { type: 'error', error: 'Malformed inbound_message' })
-            break
-          }
           const state = this.agents.get(message.agent_id)
           if (state) {
             state.queue.push(message.message)
@@ -242,14 +237,13 @@ export class Daemon {
             this.logger?.info(`inbound_message queued: agent=${message.agent_id} source=${message.message.source} queue_depth=${state.queue.size()}`)
             await this.ipcServer.sendToConnection(connId, { type: 'ok' })
           } else {
-            this.logger?.warn(`inbound_message dropped: agent=${message.agent_id} not running (source=${message.message?.source ?? 'unknown'})`)
+            this.logger?.warn(`inbound_message dropped: agent=${message.agent_id} not running (source=${message.message.source})`)
             await this.ipcServer.sendToConnection(connId, { type: 'error', error: `Agent ${message.agent_id} is not running` })
           }
           break
         }
 
         case 'agent_start': {
-          if (!message.agent_id) break
           this.logger?.info(`IPC request: start agent ${message.agent_id}`)
           await this.startAgent(message.agent_id, connId)
           await this.saveStartedAgents()
@@ -258,7 +252,6 @@ export class Daemon {
         }
 
         case 'agent_stop': {
-          if (!message.agent_id) break
           this.logger?.info(`IPC request: stop agent ${message.agent_id}`)
           await this.stopAgent(message.agent_id)
           await this.saveStartedAgents()
@@ -267,7 +260,6 @@ export class Daemon {
         }
 
         case 'agent_status': {
-          if (!message.agent_id) break
           const state = this.agents.get(message.agent_id)
           if (!state) {
             await this.ipcServer.sendToConnection(connId, {
@@ -309,7 +301,7 @@ export class Daemon {
         }
 
         default:
-          this.logger?.warn(`Unknown IPC message type: ${message.type}`)
+          this.logger?.warn(`Unknown IPC message type: ${(message as { type: string }).type}`)
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)

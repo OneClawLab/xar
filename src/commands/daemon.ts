@@ -173,6 +173,7 @@ export function createDaemonCommand(): Command {
 
         try {
           const response = await sendIpcMessage({ type: 'daemon_status' }, config.ipcPort)
+          if (response.type !== 'ok') throw new Error('unexpected response')
           const data = response.data as { pid: number; uptime: number; agents: Array<{ id: string }> }
           if (options.json) {
             console.log(JSON.stringify({ running: true, ...data }))
