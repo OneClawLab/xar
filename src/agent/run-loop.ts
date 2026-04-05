@@ -20,11 +20,12 @@ import { IpcChunkWriter } from '../daemon/ipc-chunk-writer.js'
 import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
 import { processTurn } from './turn.js'
-import { createSendMessageTool, splitTarget } from './send-message.js'
+import { createSendMessageTool, splitTarget, deliverToPeer, findPeerSource } from './send-message.js'
 import { createCreateTaskTool } from './create-task.js'
 import { createCancelTaskTool } from './cancel-task.js'
 import { TaskManager } from './task-manager.js'
 import { MidTurnInjector } from './mid-turn.js'
+import { openOrCreateThread } from './thread-lib.js'
 import { getDaemonConfig } from '../config.js'
 import { join } from 'path'
 
@@ -203,6 +204,9 @@ export class RunLoopImpl implements RunLoop {
     taskContext?: TaskSummaryContext
     originEventId?: number
     replyTarget?: string
+    /** Override the IPC delivery target (used by summary turns to stream to the peer
+     *  while keeping msg.source internal for correct role detection). */
+    overrideDeliveryTarget?: OutboundTarget
   }): Promise<any[]> {
     const { msg, config, threadStore, threadId, taskContext, originEventId, replyTarget } = params
     const theClawHome = getDaemonConfig().theClawHome
@@ -217,7 +221,7 @@ export class RunLoopImpl implements RunLoop {
     this.logger.debug('LLM context built')
 
     const isInternal = parseSource(msg.source).kind === 'internal'
-    const target = this.buildTarget(msg.source)
+    const target = params.overrideDeliveryTarget ?? this.buildTarget(msg.source)
     const conn = this.getConn()
 
     if (!conn && !isInternal) {
@@ -227,7 +231,7 @@ export class RunLoopImpl implements RunLoop {
     let deliver: Deliver | null = null
     let streamId = ''
 
-    if (target && !isInternal) {
+    if (target) {
       streamId = this.nextStreamId(target)
       if (conn) {
         deliver = new Deliver(conn, target)
@@ -236,7 +240,7 @@ export class RunLoopImpl implements RunLoop {
       streamId = `internal:${this.agentId}:${this.streamSeq++}`
     }
 
-    const chunkWriter = (conn && !isInternal) ? new IpcChunkWriter(conn, streamId) : null
+    const chunkWriter = (conn && target) ? new IpcChunkWriter(conn, streamId) : null
     const convId = extractConvId(msg.source)
 
     const extraEnv: Record<string, string> = {
@@ -297,6 +301,7 @@ export class RunLoopImpl implements RunLoop {
       extraEnv,
       extraTools: [sendMessageTool, createTaskTool, cancelTaskTool],
       midTurnInjector,
+      initialLastCheckedEventId: currentOriginEventId,
       callbacks: {
         onCompactStart: (reason) => deliver?.streamCompactStart(streamId, reason),
         onCompactEnd: (before, after) => deliver?.streamCompactEnd(streamId, before, after),
@@ -346,7 +351,9 @@ export class RunLoopImpl implements RunLoop {
       this.logger.info(`Message routed: thread=${threadId}`)
 
       // ── Worker Announce path ─────────────────────────────────────────────
-      if (isInternal && !msg.reply_to && parsed.conversation_type === 'task') {
+      // Worker announces use conv_type='agent' (built by announceWorkerResult).
+      // Delegation messages use conv_type='task'. Accept both.
+      if (isInternal && !msg.reply_to && (parsed.conversation_type === 'task' || parsed.conversation_type === 'agent')) {
         const handled = await this.handleWorkerAnnounce(msg, config, parsed, threadStore)
         if (handled) return
         // No matching task — fall through to normal LLM processing (participant)
@@ -407,9 +414,6 @@ export class RunLoopImpl implements RunLoop {
       const replyToValue = task.origin.reply_target.startsWith('peer:') || task.origin.reply_target.startsWith('agent:')
         ? task.origin.reply_target
         : undefined
-      const summaryMsg: InboundMessage = replyToValue !== undefined
-        ? { source: msg.source, content: 'All subtasks completed. Please synthesize the results.', reply_to: replyToValue }
-        : { source: msg.source, content: 'All subtasks completed. Please synthesize the results.' }
 
       const taskContext: TaskSummaryContext = {
         hasPendingTasks: false,
@@ -421,10 +425,30 @@ export class RunLoopImpl implements RunLoop {
 
       this.logger.info(`Triggering summary Turn for task: ${matchedTaskId}`)
 
-      const originThreadStore = await routeMessage(this.agentId, config, {
-        source: msg.source,
-        content: summaryMsg.content,
-      })
+      // Open the original thread (e.g. peers/alice) so executeTurn and
+      // deliverSummaryResult can find the peer's external source address.
+      const originThreadStore = await openOrCreateThread(this.agentId, task.origin.thread_id)
+
+      // Resolve the peer's external source so executeTurn can stream to the TUI.
+      // We pass it as overrideDeliveryTarget so msg.source stays internal,
+      // preserving correct role detection (orchestrator-synthesizing) in buildContext.
+      let overrideDeliveryTarget: OutboundTarget | undefined
+      if (task.origin.reply_target.startsWith('peer:')) {
+        const peerId = task.origin.reply_target.slice('peer:'.length)
+        const threadEvents = await originThreadStore.peek({ lastEventId: 0, limit: 2000 }).catch(() => [])
+        const externalSource = findPeerSource(threadEvents, peerId)
+        this.logger.info(`Summary source resolution: peerId=${peerId} threadEvents=${threadEvents.length} externalSource=${externalSource ?? 'not found'}`)
+        if (externalSource) {
+          const parsed = parseSource(externalSource)
+          if (parsed.channel_id && parsed.peer_id && parsed.conversation_id) {
+            overrideDeliveryTarget = { channel_id: parsed.channel_id, peer_id: parsed.peer_id, conversation_id: parsed.conversation_id }
+          }
+        }
+      }
+
+      const summaryMsg: InboundMessage = replyToValue !== undefined
+        ? { source: msg.source, content: 'All subtasks completed. Please synthesize the results.', reply_to: replyToValue }
+        : { source: msg.source, content: 'All subtasks completed. Please synthesize the results.' }
 
       const newMessages = await this.executeTurn({
         msg: summaryMsg,
@@ -434,9 +458,15 @@ export class RunLoopImpl implements RunLoop {
         taskContext,
         originEventId: task.origin.event_id,
         replyTarget: task.origin.reply_target,
+        ...(overrideDeliveryTarget !== undefined && { overrideDeliveryTarget }),
       })
 
-      await this.deliverSummaryResult(newMessages, task.origin.reply_target)
+      // deliverSummaryResult is only needed when executeTurn couldn't stream directly
+      // (e.g. agent-to-agent reply target). When overrideDeliveryTarget is set the
+      // summary was already streamed to the peer inside executeTurn, so skip it.
+      if (overrideDeliveryTarget === undefined) {
+        await this.deliverSummaryResult(newMessages, task.origin.reply_target, originThreadStore)
+      }
     }
 
     return true
@@ -570,6 +600,7 @@ export class RunLoopImpl implements RunLoop {
   private async deliverSummaryResult(
     newMessages: any[],
     replyTarget: string,
+    originThreadStore?: Awaited<ReturnType<typeof routeMessage>>,
   ): Promise<void> {
     const assistantText = extractAssistantText(newMessages)
     if (!assistantText) return
@@ -588,10 +619,26 @@ export class RunLoopImpl implements RunLoop {
         this.logger.warn(`Summary delivery failed: agent ${id} not running`)
       }
     } else if (prefix === 'peer') {
-      // Summary delivery to a peer requires an OutboundTarget (channel + conversation context)
-      // which is not available at this point — the summary turn has no channel context.
-      // Log a warning and skip; the orchestrator's normal stream response handles peer delivery.
-      this.logger.warn(`Summary delivery to peer ${id} skipped: no channel context available for peer delivery from summary turn`)
+      // Deliver to peer via IPC streaming — reuse deliverToPeer from send-message
+      const conn = this.getConn()
+      if (!conn) {
+        this.logger.warn(`Summary delivery to peer ${id} skipped: no IPC connection`)
+        return
+      }
+      if (!originThreadStore) {
+        this.logger.warn(`Summary delivery to peer ${id} skipped: no origin thread store`)
+        return
+      }
+      const result = await deliverToPeer(
+        { agentId: this.agentId, threadStore: originThreadStore, ipcConn: conn, sendToAgent: this.sendToAgent, convId: '', logger: this.logger, nextStreamSeq: () => ++this.streamSeq },
+        id,
+        assistantText,
+      )
+      if (result.status === 'delivered') {
+        this.logger.info(`Summary delivered to peer: ${id} (${assistantText.length} chars)`)
+      } else {
+        this.logger.warn(`Summary delivery to peer ${id} failed: ${result.message ?? 'unknown'}`)
+      }
     }
   }
 }

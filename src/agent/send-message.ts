@@ -1,7 +1,8 @@
 /**
  * send_message tool — allows the agent to send messages to peers or other agents.
  *
- * Exported helpers (splitTarget, findPeerSource) are also used by tests.
+ * Exported helpers (splitTarget, findPeerSource, deliverToPeer, deliverToAgent)
+ * are also used directly by run-loop.ts for summary turn delivery.
  */
 
 import type { Tool } from 'pai'
@@ -31,6 +32,9 @@ export interface SendMessageDeps {
  * Parse target string into [prefix, id].
  * e.g. "peer:alice" → ["peer", "alice"], "agent:bot1" → ["agent", "bot1"]
  * If no colon found, prefix is the whole string and id is empty.
+ *
+ * 调用方：send_message tool handler、run-loop.ts 的 announceWorkerResult /
+ * deliverSummaryResult / handleProcessingError。
  */
 export function splitTarget(target: string): [string, string] {
   const idx = target.indexOf(':')
@@ -42,6 +46,9 @@ export function splitTarget(target: string): [string, string] {
  * Scan thread events from end to find the most recent external source
  * that contains the given peerId.
  * Scans from the tail (most recent) so long threads don't miss recent events.
+ *
+ * 调用方：deliverToPeer（投递前定位 peer 的 channel 地址）。
+ * 也被 run-loop.ts 的 deliverSummaryResult 间接使用（通过 deliverToPeer）。
  */
 export function findPeerSource(events: ThreadEvent[], peerId: string): string | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
@@ -60,7 +67,17 @@ export function findPeerSource(events: ThreadEvent[], peerId: string): string | 
 
 // ── Delivery functions ───────────────────────────────────────────────────────
 
-async function deliverToPeer(
+/**
+ * 通过 IPC streaming 把消息投递给 human peer（经由 xgw → TUI/Telegram 等）。
+ *
+ * 流程：从 thread history 里找 peer 最近的 external source → 解析出
+ * OutboundTarget → 发 stream_start/token/end 三帧 → 写 thread record。
+ *
+ * 调用方：
+ * - send_message tool handler（LLM 主动调用 send_message(target="peer:...")）
+ * - run-loop.ts deliverSummaryResult（create_task 全部完成后把 summary 推给发起人）
+ */
+export async function deliverToPeer(
   deps: SendMessageDeps,
   peerId: string,
   content: string,
@@ -131,7 +148,16 @@ async function deliverToPeer(
   return { status: 'delivered', target: targetStr }
 }
 
-async function deliverToAgent(
+/**
+ * 通过 daemon 内部路由把消息投递给另一个 agent（fire-and-forget）。
+ *
+ * 流程：构造 internal source → 调用 sendToAgent callback（daemon 注入）→
+ * 写 thread record。不设 reply_to，接收方不会自动 announce 回来。
+ *
+ * 调用方：
+ * - send_message tool handler（LLM 主动调用 send_message(target="agent:...")）
+ */
+export async function deliverToAgent(
   deps: SendMessageDeps,
   agentId: string,
   content: string,
@@ -170,19 +196,30 @@ async function deliverToAgent(
   return { status: 'delivered', target: targetStr }
 }
 
-// ── Factory ──────────────────────────────────────────────────────────────────
+const SEND_MESSAGE_TOOL_DESC = `
+Send a one-way notification to a peer or agent. Fire-and-forget — no reply is returned to you.
 
+Allowed uses:
+- Send a progress update or intermediate notification to a human peer (target="peer:<id>")
+- Notify another agent of something without expecting a response (target="agent:<id>")
+
+NEVER use this to delegate work to an agent and collect results.
+If you need an agent to do work and return results to you, use create_task instead.
+Using send_message for delegation will silently discard the agent's reply.
+
+Your normal text response is automatically delivered to the current peer — you do not need send_message for that.
+`.trim();
+
+/**
+ * 创建 send_message LLM tool，注入运行时依赖。
+ *
+ * 每次 Turn 开始前由 run-loop.ts 的 executeTurn 调用，把当前 Turn 的
+ * threadStore、ipcConn、sendToAgent 等上下文绑定进去，返回给 processTurn 使用。
+ */
 export function createSendMessageTool(deps: SendMessageDeps): Tool {
   return {
     name: 'send_message',
-    description: `Send a message to a peer or agent (fire-and-forget).
-Use this when you need to:
-- Send a message to a different target than the current conversation peer
-- Send an intermediate notification before your main reply
-- Send progress updates during a long task
-Your normal text response is automatically streamed to the current peer —
-you don't need send_message for that.
-To delegate work to an agent and wait for results, use create_task instead.`,
+    description: SEND_MESSAGE_TOOL_DESC,
     parameters: {
       type: 'object',
       properties: {

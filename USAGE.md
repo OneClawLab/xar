@@ -91,10 +91,10 @@ Creates a new agent directory structure:
 - `~/.theclaw/agents/<id>/config.json` — Configuration
 - `~/.theclaw/agents/<id>/IDENTITY.md` — System prompt
 - `~/.theclaw/agents/<id>/USAGE.md` — Usage notes
-- `~/.theclaw/agents/<id>/inbox/` — Inbox thread (SQLite)
 - `~/.theclaw/agents/<id>/sessions/` — LLM session files
 - `~/.theclaw/agents/<id>/memory/` — Memory files
 - `~/.theclaw/agents/<id>/threads/` — Conversation threads
+- `~/.theclaw/agents/<id>/workdir/` — Agent working directory
 - `~/.theclaw/agents/<id>/logs/` — Agent logs
 
 **Options:**
@@ -251,9 +251,61 @@ test-agent
 - `0` — Success
 - `2` — Invalid arguments
 
----
+### Send message to agent
 
-## Configuration
+```bash
+xar send <id> <message>
+xar send <id> <message> --source <source>
+```
+
+Sends a message directly to a running agent via IPC (for testing/debugging).
+
+**Arguments:**
+- `<id>` — Agent ID
+- `<message>` — Message content
+
+**Options:**
+- `--source <source>` — Source address (default: constructed from `XAR_AGENT_ID` + `XAR_CONV_ID` env vars)
+
+If `--source` is not provided, the source is built from environment variables:
+- `XAR_AGENT_ID` + `XAR_CONV_ID` → `internal:agent:<conv_id>:<agent_id>`
+
+**Exit codes:**
+- `0` — Success
+- `1` — Daemon not running, agent not found, or delivery failed
+- `2` — Missing source (no `--source` and env vars not set)
+
+**Example:**
+```bash
+# Send from an external CLI source
+xar send my-agent "hello" --source external:cli:main:dm:conv1:user1
+
+# Send as internal agent message (requires XAR_AGENT_ID and XAR_CONV_ID)
+XAR_AGENT_ID=orchestrator XAR_CONV_ID=conv-abc xar send my-agent "do the task"
+```
+
+### Interactive chat
+
+```bash
+xar chat <id>
+```
+
+Opens an interactive REPL for direct conversation with an agent. Bypasses the daemon and IPC — talks directly via the pai library and thread library. Useful for local debugging.
+
+**Features:**
+- Streams LLM responses to stdout in real time
+- Shows tool calls and results on stderr
+- Persists conversation in `sessions/peer-cli.jsonl`
+- Supports session compaction
+
+**Exit:** `Ctrl+C` or `Ctrl+D`
+
+**Example:**
+```bash
+xar chat my-agent
+```
+
+
 
 ### Agent config file
 

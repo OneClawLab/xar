@@ -21,17 +21,21 @@ export interface CreateTaskToolDeps {
   sendToAgent: (agentId: string, message: InboundMessage) => Promise<void>
 }
 
+const CREATE_TASK_TOOL_DESC = `
+Create a task with one or more subtasks delegated to worker agents.
+Use this when you need to:
+- Fan out work to multiple agents and wait for all results
+- Delegate a task to a single agent and wait for the result
+Set wait_all=true to receive a summary turn when all subtasks complete.
+Set wait_all=false for fire-and-forget delegation.
+`.trim();
+
 export function createCreateTaskTool(deps: CreateTaskToolDeps): Tool {
   const { taskManager, agentId, originThreadId, originEventId, replyTarget, sendToAgent } = deps
 
   return {
     name: 'create_task',
-    description: `Create a task with one or more subtasks delegated to worker agents.
-Use this when you need to:
-- Fan out work to multiple agents and wait for all results
-- Delegate a task to a single agent and wait for the result
-Set wait_all=true to receive a summary turn when all subtasks complete.
-Set wait_all=false for fire-and-forget delegation.`,
+    description: CREATE_TASK_TOOL_DESC,
     parameters: {
       type: 'object',
       properties: {

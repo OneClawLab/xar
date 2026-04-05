@@ -67,6 +67,10 @@ export interface TurnParams {
   extraEnv?: Record<string, string> | undefined
   /** Optional mid-turn injector: checks for new Human messages after each tool call */
   midTurnInjector?: MidTurnInjector | undefined
+  /** Initial lastCheckedEventId for mid-turn injection; defaults to 0 (scans all history).
+   *  Should be set to the thread's latest event id at turn start to avoid re-injecting
+   *  historical messages. */
+  initialLastCheckedEventId?: number | undefined
 }
 
 export interface TurnResult {
@@ -113,7 +117,6 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
     chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId,
     maxAttempts, logger, callbacks, extraTools, extraEnv, midTurnInjector,
   } = params
-
   const { contextWindow: cw, maxOutputTokens: mo, inputBudget } = computeInputBudget(
     params.contextWindow, params.maxOutputTokens,
   )
@@ -165,7 +168,7 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
 
     // Mid-turn injection state: messages to prepend to the next LLM call's history
     let midTurnInjections: Message[] = []
-    let lastCheckedEventId = 0
+    let lastCheckedEventId = params.initialLastCheckedEventId ?? 0
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {

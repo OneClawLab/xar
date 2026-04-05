@@ -209,6 +209,12 @@ export class Daemon {
   private async gracefulShutdown(): Promise<void> {
     if (this.shuttingDown) return
     this.shuttingDown = true
+
+    // Remove unhandled error handlers — during shutdown, stale async callbacks
+    // (e.g. WebSocket close events) may fire after the logger is closed.
+    process.removeAllListeners('uncaughtException')
+    process.removeAllListeners('unhandledRejection')
+
     this.logger?.info('Daemon shutting down gracefully...')
 
     const stopPromises = Array.from(this.agents.keys()).map((id) => this.stopAgent(id))
