@@ -35,7 +35,7 @@ export interface TurnCallbacks {
   onStreamError(error: string): void | Promise<void>
   onThinkingDelta(delta: string): void | Promise<void>
   onToolCall(toolCall: { name: string; arguments: unknown }): void | Promise<void>
-  onToolResult(result: unknown): void | Promise<void>
+  onToolResult(name: string, result: unknown): void | Promise<void>
 }
 
 export interface TurnParams {
@@ -203,7 +203,7 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
             await callbacks.onToolCall({ name: event.name, arguments: event.args })
           }
           if (event.type === 'tool_result') {
-            await callbacks.onToolResult(event.result)
+            await callbacks.onToolResult(event.name, event.result)
           }
           if (event.type === 'chat_end') {
             for (const m of event.newMessages) {

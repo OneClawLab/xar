@@ -326,7 +326,7 @@ export class RunLoopImpl implements RunLoop {
         onStreamError: (error) => deliver?.streamError(streamId, error),
         onThinkingDelta: (delta) => deliver?.streamThinking(streamId, delta),
         onToolCall: (tc) => deliver?.streamToolCall(streamId, tc),
-        onToolResult: (tr) => deliver?.streamToolResult(streamId, tr),
+        onToolResult: (name, tr) => deliver?.streamToolResult(streamId, name, tr),
       },
     })
 

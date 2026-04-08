@@ -29,8 +29,8 @@ export class Deliver {
     await this.conn.send({ type: 'stream_tool_call', stream_id: streamId, tool_call: toolCall })
   }
 
-  async streamToolResult(streamId: string, toolResult: unknown): Promise<void> {
-    await this.conn.send({ type: 'stream_tool_result', stream_id: streamId, tool_result: toolResult })
+  async streamToolResult(streamId: string, toolName: string, toolResult: unknown): Promise<void> {
+    await this.conn.send({ type: 'stream_tool_result', stream_id: streamId, tool_name: toolName, tool_result: toolResult })
   }
 
   async streamEnd(streamId: string): Promise<void> {
