@@ -249,6 +249,29 @@ describe('processTurn', () => {
     expect(cbs.calls['onStreamError']![0]![0]).toBe('invalid api key')
   })
 
+  it('fires onToolCall and onToolResult with tool name and result', async () => {
+    vi.mocked(mockCompact).mockResolvedValue({ compacted: false })
+
+    const toolResult = { stdout: 'hello', stderr: '', exitCode: 0 }
+    const cbs = makeCallbacks()
+    await processTurn(baseTurnParams({
+      pai: mockPai(async function* () {
+        yield { type: 'tool_call' as const, callId: 'c1', name: 'bash_exec', args: { command: 'echo hi', comment: 'test' } }
+        yield { type: 'tool_result' as const, callId: 'c1', name: 'bash_exec', result: toolResult }
+        yield { type: 'chat_end' as const, newMessages: [{ role: 'assistant' as const, content: 'done' }] }
+      }),
+      callbacks: cbs,
+    }))
+
+    expect(cbs.calls['onToolCall']).toHaveLength(1)
+    expect(cbs.calls['onToolCall']![0]![0]).toMatchObject({ name: 'bash_exec' })
+
+    expect(cbs.calls['onToolResult']).toHaveLength(1)
+    // first arg is tool name, second is result
+    expect(cbs.calls['onToolResult']![0]![0]).toBe('bash_exec')
+    expect(cbs.calls['onToolResult']![0]![1]).toEqual(toolResult)
+  })
+
   it('compact failure is non-fatal — ctx_usage is skipped but chat proceeds', async () => {
     vi.mocked(mockCompact).mockRejectedValue(new Error('disk full'))
 
