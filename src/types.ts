@@ -45,6 +45,13 @@ export interface InboundMessage {
    * Requirement 9.3
    */
   conversation_type?: string
+  /**
+   * Delegation id stamped by create_task on the subtask.
+   * Carried back in the worker's announce message so handleAnnounce can
+   * match by id rather than by worker+status, ensuring idempotency when
+   * the same worker is delegated multiple subtasks.
+   */
+  delegation_id?: string
 }
 
 /**

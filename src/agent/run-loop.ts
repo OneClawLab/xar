@@ -21,9 +21,10 @@ import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
 import { processTurn } from './turn.js'
 import { createSendMessageTool, splitTarget, deliverToPeer, findPeerSource } from './send-message.js'
-import { createCreateTaskTool } from './create-task.js'
-import { createCancelTaskTool } from './cancel-task.js'
-import { TaskManager } from './task-manager.js'
+import { createCreateTaskTool } from './tasks/create-task.js'
+import { createCancelTaskTool } from './tasks/cancel-task.js'
+import { createSteerTaskTool } from './tasks/steer-task.js'
+import { TaskManager } from './tasks/task-manager.js'
 import { MidTurnInjector } from './mid-turn.js'
 import { openOrCreateThread } from './thread-lib.js'
 import { getDaemonConfig } from '../config.js'
@@ -282,6 +283,12 @@ export class RunLoopImpl implements RunLoop {
       sendToAgent: sendToAgentAsync,
     })
 
+    const steerTaskTool = createSteerTaskTool({
+      taskManager,
+      agentId: this.agentId,
+      sendToAgent: sendToAgentAsync,
+    })
+
     // Mid-turn injector for checking new Human messages during tool call loop
     const midTurnInjector = new MidTurnInjector(threadStore)
 
@@ -300,7 +307,7 @@ export class RunLoopImpl implements RunLoop {
       maxAttempts: config.retry.max_attempts,
       logger: this.logger,
       extraEnv,
-      extraTools: [sendMessageTool, createTaskTool, cancelTaskTool],
+      extraTools: [sendMessageTool, createTaskTool, cancelTaskTool, steerTaskTool],
       midTurnInjector,
       initialLastCheckedEventId: currentOriginEventId,
       callbacks: {
@@ -400,7 +407,7 @@ export class RunLoopImpl implements RunLoop {
 
     await threadStore.push({ source: msg.source, type: 'record', subtype: 'announce', content: msg.content })
 
-    const announceResult = await taskManager.handleAnnounce(matchedTaskId, workerAgentId, msg.content, failed)
+    const announceResult = await taskManager.handleAnnounce(matchedTaskId, workerAgentId, msg.content, failed, msg.delegation_id)
     this.logger.info(`${this.agentId}: Worker announce handled: task=${matchedTaskId} worker=${workerAgentId} completed=${announceResult.taskCompleted}`)
 
     if (announceResult.taskCompleted) {
@@ -512,7 +519,7 @@ export class RunLoopImpl implements RunLoop {
     // ── Worker Turn: internal message with reply_to ──────────────────────
     if (isInternal && msg.reply_to) {
       const newMessages = await this.executeTurn({ msg, config, threadStore, threadId, originEventId, replyTarget })
-      await this.announceWorkerResult(newMessages, msg.reply_to, msg.source)
+      await this.announceWorkerResult(newMessages, msg.reply_to, msg.source, msg.delegation_id)
       return
     }
 
@@ -523,7 +530,7 @@ export class RunLoopImpl implements RunLoop {
   /**
    * Auto-announce worker Turn result back to the orchestrator.
    */
-  private async announceWorkerResult(newMessages: any[], replyTo: string, source: string): Promise<void> {
+  private async announceWorkerResult(newMessages: any[], replyTo: string, source: string, delegationId?: string): Promise<void> {
     const assistantText = extractAssistantText(newMessages)
     const [prefix, id] = splitTarget(replyTo)
 
@@ -534,6 +541,8 @@ export class RunLoopImpl implements RunLoop {
           source: `internal:agent:${convId}:${this.agentId}`,
           content: assistantText,
           event_type: 'message',
+          // Carry delegation_id back so the orchestrator's handleAnnounce can match by id.
+          ...(delegationId !== undefined && { delegation_id: delegationId }),
         })
         if (announced) {
           this.logger.info(`${this.agentId}: Worker announce: ${this.agentId} → ${id} (${assistantText.length} chars)`)

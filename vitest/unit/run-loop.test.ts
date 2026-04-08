@@ -53,7 +53,7 @@ vi.mock('../../src/config.js', () => ({
 
 import { RunLoopImpl } from '../../src/agent/run-loop.js'
 import { AsyncQueueImpl } from '../../src/agent/queue.js'
-import { TaskManager } from '../../src/agent/task-manager.js'
+import { TaskManager } from '../../src/agent/tasks/task-manager.js'
 import { getDaemonConfig } from '../../src/config.js'
 import { loadAgentConfig } from '../../src/agent/config.js'
 import { processTurn } from '../../src/agent/turn.js'

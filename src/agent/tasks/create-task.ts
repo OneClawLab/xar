@@ -8,7 +8,7 @@
 import { defineTool } from 'pai'
 import type { TaskManager } from './task-types.js'
 import { stripAgentPrefix } from './task-types.js'
-import type { InboundMessage } from '../types.js'
+import type { InboundMessage } from '../../types.js'
 
 // ── Tool I/O types ────────────────────────────────────────────────────────────
 
@@ -108,6 +108,7 @@ export function createCreateTaskTool(deps: CreateTaskToolDeps) {
           source,
           content: subtask.instruction,
           reply_to: `agent:${agentId}`,
+          delegation_id: subtask.delegation_id,
         }
 
         await sendToAgent(workerAgentId, delegationMessage)

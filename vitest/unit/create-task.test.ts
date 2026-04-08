@@ -7,8 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { tmpdir } from 'node:os'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { TaskManager } from '../../src/agent/task-manager.js'
-import { createCreateTaskTool } from '../../src/agent/create-task.js'
+import { TaskManager } from '../../src/agent/tasks/task-manager.js'
+import { createCreateTaskTool } from '../../src/agent/tasks/create-task.js'
 import type { InboundMessage } from '../../src/types.js'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

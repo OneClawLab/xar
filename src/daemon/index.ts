@@ -114,6 +114,53 @@ export class Daemon {
         this.logger?.error(`Failed to auto-start agent ${agentId}: ${errorMsg}`)
       }
     }
+
+    // Orphan recovery: re-delegate subtasks that were in-flight when the daemon last stopped.
+    await this.recoverOrphanTasks(startedIds)
+  }
+
+  /**
+   * Scan each started agent's task directory for stale tasks (status=waiting, subtasks=sent).
+   * Re-send delegation messages to the workers so the fan-in can complete.
+   */
+  private async recoverOrphanTasks(agentIds: string[]): Promise<void> {
+    const { TaskManager } = await import('../agent/tasks/task-manager.js')
+    const { stripAgentPrefix } = await import('../agent/tasks/task-types.js')
+
+    for (const agentId of agentIds) {
+      try {
+        const tm = new TaskManager(agentId, this.config.theClawHome)
+        const staleTasks = await tm.getStaleTasks()
+        if (staleTasks.length === 0) continue
+
+        this.logger?.info(`Orphan recovery: agent=${agentId} stale_tasks=${staleTasks.length}`)
+
+        for (const task of staleTasks) {
+          for (const subtask of task.subtasks) {
+            if (subtask.status !== 'sent') continue
+
+            const workerAgentId = stripAgentPrefix(subtask.worker)
+            const workerState = this.agents.get(workerAgentId)
+            if (!workerState) {
+              this.logger?.warn(`Orphan recovery: worker ${workerAgentId} not running, skipping subtask ${subtask.subtask_id} of task ${task.task_id}`)
+              continue
+            }
+
+            const source = `internal:task:${task.task_id}:${agentId}`
+            workerState.queue.push({
+              source,
+              content: subtask.instruction,
+              reply_to: `agent:${agentId}`,
+              delegation_id: subtask.delegation_id,
+            })
+            this.logger?.info(`Orphan recovery: re-delegated subtask ${subtask.subtask_id} of task ${task.task_id} to worker ${workerAgentId}`)
+          }
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        this.logger?.error(`Orphan recovery failed for agent ${agentId}: ${errorMsg}`)
+      }
+    }
   }
 
   /** Persist the set of running agents so daemon restart can restore them. */

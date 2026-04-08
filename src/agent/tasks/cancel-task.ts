@@ -9,7 +9,7 @@
 import { defineTool } from 'pai'
 import type { TaskManager } from './task-types.js'
 import { stripAgentPrefix } from './task-types.js'
-import type { InboundMessage } from '../types.js'
+import type { InboundMessage } from '../../types.js'
 
 // ── Tool I/O types ────────────────────────────────────────────────────────────
 
@@ -29,13 +29,17 @@ export interface CancelTaskToolDeps {
   sendToAgent: (agentId: string, message: InboundMessage) => Promise<void>
 }
 
+const CANCEL_TASK_TOOL_DESC = `
+Cancel a task and notify all active workers.
+Workers will be notified asynchronously. Already-completed subtasks are not affected.
+`.trim();
+
 export function createCancelTaskTool(deps: CancelTaskToolDeps) {
   const { taskManager, agentId, sendToAgent } = deps
 
   return defineTool<CancelTaskToolInput, CancelTaskToolOutput>({
     name: 'cancel_task',
-    description: `Cancel a task and notify all active workers.
-Workers will be notified asynchronously. Already-completed subtasks are not affected.`,
+    description: CANCEL_TASK_TOOL_DESC,
     parameters: {
       type: 'object',
       properties: {
