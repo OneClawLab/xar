@@ -5,7 +5,7 @@
  * are also used directly by run-loop.ts for summary turn delivery.
  */
 
-import type { Tool } from 'pai'
+import { defineTool } from 'pai'
 import type { ThreadStore, ThreadEvent } from 'thread'
 import type { InboundMessage, OutboundTarget } from '../types.js'
 import type { IpcConnection } from '../ipc/types.js'
@@ -24,6 +24,17 @@ export interface SendMessageDeps {
   logger: Logger
   /** Per-agent stream sequence counter, shared with run-loop */
   nextStreamSeq: () => number
+}
+
+export interface SendMessageToolInput {
+  target: string
+  content: string
+}
+
+export interface SendMessageToolOutput {
+  status: string
+  target?: string
+  message?: string
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -81,7 +92,7 @@ export async function deliverToPeer(
   deps: SendMessageDeps,
   peerId: string,
   content: string,
-): Promise<{ status: string; target?: string; message?: string }> {
+): Promise<SendMessageToolOutput> {
   const { threadStore, ipcConn, logger, nextStreamSeq } = deps
 
   // 1. Scan thread for peer's external source — scan from tail for recency
@@ -161,7 +172,7 @@ export async function deliverToAgent(
   deps: SendMessageDeps,
   agentId: string,
   content: string,
-): Promise<{ status: string; target?: string; message?: string }> {
+): Promise<SendMessageToolOutput> {
   const { agentId: selfAgentId, convId, sendToAgent, threadStore, logger } = deps
 
   if (!sendToAgent) {
@@ -216,8 +227,8 @@ Your normal text response is automatically delivered to the current peer — you
  * 每次 Turn 开始前由 run-loop.ts 的 executeTurn 调用，把当前 Turn 的
  * threadStore、ipcConn、sendToAgent 等上下文绑定进去，返回给 processTurn 使用。
  */
-export function createSendMessageTool(deps: SendMessageDeps): Tool {
-  return {
+export function createSendMessageTool(deps: SendMessageDeps) {
+  return defineTool<SendMessageToolInput, SendMessageToolOutput>({
     name: 'send_message',
     description: SEND_MESSAGE_TOOL_DESC,
     parameters: {
@@ -234,8 +245,7 @@ export function createSendMessageTool(deps: SendMessageDeps): Tool {
       },
       required: ['target', 'content'],
     },
-    async handler(args: unknown): Promise<unknown> {
-      const { target, content } = args as { target: string; content: string }
+    async handler({ target, content }) {
       const [prefix, id] = splitTarget(target)
 
       switch (prefix) {
@@ -247,5 +257,5 @@ export function createSendMessageTool(deps: SendMessageDeps): Tool {
           return { status: 'error', message: 'invalid target format' }
       }
     },
-  }
+  })
 }

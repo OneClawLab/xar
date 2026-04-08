@@ -93,7 +93,7 @@ export class RunLoopImpl implements RunLoop {
   }
 
   async start(): Promise<void> {
-    this.logger.info('Run-loop started')
+    this.logger.info(`${this.agentId}: Run-loop started`)
 
     try {
       for await (const msg of this.queue) {
@@ -108,7 +108,7 @@ export class RunLoopImpl implements RunLoop {
           const prev = this.threadLocks.get(threadId) ?? Promise.resolve()
           const task = prev.then(() => this.processMessage(msg, config)).catch((err) => {
             const errorMsg = err instanceof Error ? err.message : String(err)
-            this.logger.error(`Error processing message: ${errorMsg}`)
+            this.logger.error(`${this.agentId}: Error processing message: ${errorMsg}`)
           })
           this.threadLocks.set(threadId, task)
           this.inflight.add(task)
@@ -116,17 +116,17 @@ export class RunLoopImpl implements RunLoop {
         } catch (err) {
           // Config load or routing failed for this message — skip it, keep the loop alive
           const errorMsg = err instanceof Error ? err.message : String(err)
-          this.logger.error(`Error dispatching message (skipped): ${errorMsg}`)
+          this.logger.error(`${this.agentId}: Error dispatching message (skipped): ${errorMsg}`)
         }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
-      this.logger.error(`Run-loop error: ${errorMsg}`)
+      this.logger.error(`${this.agentId}: Run-loop error: ${errorMsg}`)
     }
 
     // Wait for all in-flight tasks to finish
     await Promise.all(this.inflight)
-    this.logger.info('Run-loop stopped')
+    this.logger.info(`${this.agentId}: Run-loop stopped`)
   }
 
   async stop(): Promise<void> {
@@ -218,14 +218,14 @@ export class RunLoopImpl implements RunLoop {
     const chatInput = await buildContext(
       this.agentId, config, threadStore, msg, threadId, availableAgents, taskContext,
     )
-    this.logger.debug('LLM context built')
+    this.logger.debug(`${this.agentId}: LLM context built`)
 
     const isInternal = parseSource(msg.source).kind === 'internal'
     const target = params.overrideDeliveryTarget ?? this.buildTarget(msg.source)
     const conn = this.getConn()
 
     if (!conn && !isInternal) {
-      this.logger.warn(`No IPC connection available for streaming, processing without streaming`)
+      this.logger.warn(`${this.agentId}: No IPC connection available for streaming, processing without streaming`)
     }
 
     let deliver: Deliver | null = null
@@ -243,6 +243,7 @@ export class RunLoopImpl implements RunLoop {
     const chunkWriter = (conn && target) ? new IpcChunkWriter(conn, streamId) : null
     const convId = extractConvId(msg.source)
 
+    // let bash commands have a way to know current agent id and conversation id
     const extraEnv: Record<string, string> = {
       XAR_AGENT_ID: this.agentId,
       XAR_CONV_ID: convId,
@@ -331,14 +332,14 @@ export class RunLoopImpl implements RunLoop {
       }
     })
     await threadStore.pushBatch(threadEvents)
-    this.logger.info(`Turn completed: stream=${streamId} records=${threadEvents.length}`)
+    this.logger.info(`${this.agentId}: Turn completed: stream=${streamId} records=${threadEvents.length}`)
 
     return result.newMessages
   }
 
   private async processMessage(msg: InboundMessage, config: AgentConfig): Promise<void> {
     const target = this.buildTarget(msg.source)
-    this.logger.info(`Processing message: source=${msg.source}`)
+    this.logger.info(`${this.agentId}: Processing message: source=${msg.source}`)
 
     const parsed = parseSource(msg.source)
     const isInternal = parsed.kind === 'internal'
@@ -348,7 +349,7 @@ export class RunLoopImpl implements RunLoop {
     try {
       threadStore = await routeMessage(this.agentId, config, msg)
       const threadId = determineThreadId(config, msg.source)
-      this.logger.info(`Message routed: thread=${threadId}`)
+      this.logger.info(`${this.agentId}: Message routed: thread=${threadId}`)
 
       // ── Worker Announce path ─────────────────────────────────────────────
       // Worker announces use conv_type='agent' (built by announceWorkerResult).
@@ -387,20 +388,20 @@ export class RunLoopImpl implements RunLoop {
     const matchedTaskId = existingTask?.task_id ?? null
 
     if (!matchedTaskId) {
-      this.logger.info(`No matching task for announce from ${workerAgentId}, treating as participant message`)
+      this.logger.info(`${this.agentId}: No matching task for announce from ${workerAgentId}, treating as participant message`)
       return false
     }
 
     const isCancelled = await taskManager.isTaskCancelled(matchedTaskId)
     if (isCancelled) {
-      this.logger.info(`Discarding announce for cancelled task: ${matchedTaskId}`)
+      this.logger.info(`${this.agentId}: Discarding announce for cancelled task: ${matchedTaskId}`)
       return true
     }
 
     await threadStore.push({ source: msg.source, type: 'record', subtype: 'announce', content: msg.content })
 
     const announceResult = await taskManager.handleAnnounce(matchedTaskId, workerAgentId, msg.content, failed)
-    this.logger.info(`Worker announce handled: task=${matchedTaskId} worker=${workerAgentId} completed=${announceResult.taskCompleted}`)
+    this.logger.info(`${this.agentId}: Worker announce handled: task=${matchedTaskId} worker=${workerAgentId} completed=${announceResult.taskCompleted}`)
 
     if (announceResult.taskCompleted) {
       const task = announceResult.task
@@ -423,7 +424,7 @@ export class RunLoopImpl implements RunLoop {
         replyTarget: task.origin.reply_target,
       }
 
-      this.logger.info(`Triggering summary Turn for task: ${matchedTaskId}`)
+      this.logger.info(`${this.agentId}: Triggering summary Turn for task: ${matchedTaskId}`)
 
       // Open the original thread (e.g. peers/alice) so executeTurn and
       // deliverSummaryResult can find the peer's external source address.
@@ -437,7 +438,7 @@ export class RunLoopImpl implements RunLoop {
         const peerId = task.origin.reply_target.slice('peer:'.length)
         const threadEvents = await originThreadStore.peek({ lastEventId: 0, limit: 2000 }).catch(() => [])
         const externalSource = findPeerSource(threadEvents, peerId)
-        this.logger.info(`Summary source resolution: peerId=${peerId} threadEvents=${threadEvents.length} externalSource=${externalSource ?? 'not found'}`)
+        this.logger.info(`${this.agentId}: Summary source resolution: peerId=${peerId} threadEvents=${threadEvents.length} externalSource=${externalSource ?? 'not found'}`)
         if (externalSource) {
           const parsed = parseSource(externalSource)
           if (parsed.channel_id && parsed.peer_id && parsed.conversation_id) {
@@ -489,7 +490,7 @@ export class RunLoopImpl implements RunLoop {
     await threadStore.push({ source: msg.source, type: eventType, content: msg.content })
 
     if (eventType === 'record') {
-      this.logger.info(`Record-only message stored (no LLM): thread=${threadId} source=${msg.source}`)
+      this.logger.info(`${this.agentId}: Record-only message stored (no LLM): thread=${threadId} source=${msg.source}`)
       return
     }
 
@@ -535,12 +536,12 @@ export class RunLoopImpl implements RunLoop {
           event_type: 'message',
         })
         if (announced) {
-          this.logger.info(`Worker announce: ${this.agentId} → ${id} (${assistantText.length} chars)`)
+          this.logger.info(`${this.agentId}: Worker announce: ${this.agentId} → ${id} (${assistantText.length} chars)`)
         } else {
-          this.logger.warn(`Worker announce failed: agent ${id} not running`)
+          this.logger.warn(`${this.agentId}: Worker announce failed: agent ${id} not running`)
         }
       } else {
-        this.logger.info(`Worker Turn produced no assistant text, skipping announce to ${id}`)
+        this.logger.info(`${this.agentId}: Worker Turn produced no assistant text, skipping announce to ${id}`)
       }
     }
   }
@@ -555,13 +556,13 @@ export class RunLoopImpl implements RunLoop {
     threadStore: Awaited<ReturnType<typeof routeMessage>> | null,
   ): Promise<void> {
     const errorMsg = err instanceof Error ? err.message : String(err)
-    this.logger.error(`Message processing failed: ${errorMsg}`)
+    this.logger.error(`${this.agentId}: Message processing failed: ${errorMsg}`)
 
     if (threadStore) {
       try {
         await threadStore.push({ source: 'self', type: 'record', subtype: 'error', content: errorMsg })
       } catch {
-        this.logger.error('Failed to write error record to thread')
+        this.logger.error(`${this.agentId}: Failed to write error record to thread`)
       }
     }
 
@@ -576,7 +577,7 @@ export class RunLoopImpl implements RunLoop {
           event_type: 'message',
         })
         if (!announced) {
-          this.logger.warn(`Failed to notify agent ${id} of task failure`)
+          this.logger.warn(`${this.agentId}: Failed to notify agent ${id} of task failure`)
         }
       }
     }
@@ -589,7 +590,7 @@ export class RunLoopImpl implements RunLoop {
         }
       }
     } catch {
-      this.logger.error('Failed to send error notification to client')
+      this.logger.error(`${this.agentId}: Failed to send error notification to client`)
     }
   }
 
@@ -614,19 +615,19 @@ export class RunLoopImpl implements RunLoop {
         event_type: 'message',
       })
       if (announced) {
-        this.logger.info(`Summary delivered to agent: ${id} (${assistantText.length} chars)`)
+        this.logger.info(`${this.agentId}: Summary delivered to agent: ${id} (${assistantText.length} chars)`)
       } else {
-        this.logger.warn(`Summary delivery failed: agent ${id} not running`)
+        this.logger.warn(`${this.agentId}: Summary delivery failed: agent ${id} not running`)
       }
     } else if (prefix === 'peer') {
       // Deliver to peer via IPC streaming — reuse deliverToPeer from send-message
       const conn = this.getConn()
       if (!conn) {
-        this.logger.warn(`Summary delivery to peer ${id} skipped: no IPC connection`)
+        this.logger.warn(`${this.agentId}: Summary delivery to peer ${id} skipped: no IPC connection`)
         return
       }
       if (!originThreadStore) {
-        this.logger.warn(`Summary delivery to peer ${id} skipped: no origin thread store`)
+        this.logger.warn(`${this.agentId}: Summary delivery to peer ${id} skipped: no origin thread store`)
         return
       }
       const result = await deliverToPeer(
@@ -635,9 +636,9 @@ export class RunLoopImpl implements RunLoop {
         assistantText,
       )
       if (result.status === 'delivered') {
-        this.logger.info(`Summary delivered to peer: ${id} (${assistantText.length} chars)`)
+        this.logger.info(`${this.agentId}: Summary delivered to peer: ${id} (${assistantText.length} chars)`)
       } else {
-        this.logger.warn(`Summary delivery to peer ${id} failed: ${result.message ?? 'unknown'}`)
+        this.logger.warn(`${this.agentId}: Summary delivery to peer ${id} failed: ${result.message ?? 'unknown'}`)
       }
     }
   }

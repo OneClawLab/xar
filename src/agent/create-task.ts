@@ -5,10 +5,22 @@
  * Requirements: 1.1, 1.2, 1.3, 1.4, 2.5
  */
 
-import type { Tool } from 'pai'
+import { defineTool } from 'pai'
 import type { TaskManager } from './task-types.js'
 import { stripAgentPrefix } from './task-types.js'
 import type { InboundMessage } from '../types.js'
+
+// ── Tool I/O types ────────────────────────────────────────────────────────────
+
+export interface CreateTaskToolInput {
+  subtasks: Array<{ worker: string; instruction: string }>
+  wait_all: boolean
+}
+
+export interface CreateTaskToolOutput {
+  task_id: string
+  status: string
+}
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
@@ -30,10 +42,10 @@ Set wait_all=true to receive a summary turn when all subtasks complete.
 Set wait_all=false for fire-and-forget delegation.
 `.trim();
 
-export function createCreateTaskTool(deps: CreateTaskToolDeps): Tool {
+export function createCreateTaskTool(deps: CreateTaskToolDeps) {
   const { taskManager, agentId, originThreadId, originEventId, replyTarget, sendToAgent } = deps
 
-  return {
+  return defineTool<CreateTaskToolInput, CreateTaskToolOutput>({
     name: 'create_task',
     description: CREATE_TASK_TOOL_DESC,
     parameters: {
@@ -66,12 +78,7 @@ export function createCreateTaskTool(deps: CreateTaskToolDeps): Tool {
       required: ['subtasks', 'wait_all'],
     },
 
-    async handler(args: unknown): Promise<unknown> {
-      const { subtasks, wait_all } = args as {
-        subtasks: Array<{ worker: string; instruction: string }>
-        wait_all: boolean
-      }
-
+    async handler({ subtasks, wait_all }) {
       // Normalise worker addresses: strip "agent:" prefix for TaskManager
       const normalisedSubtasks = subtasks.map((st) => ({
         worker: stripAgentPrefix(st.worker),
@@ -111,5 +118,5 @@ export function createCreateTaskTool(deps: CreateTaskToolDeps): Tool {
         status: task.status,
       }
     },
-  }
+  })
 }

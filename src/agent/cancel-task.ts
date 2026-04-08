@@ -6,10 +6,20 @@
  * Requirements: 2.1, 2.2
  */
 
-import type { Tool } from 'pai'
+import { defineTool } from 'pai'
 import type { TaskManager } from './task-types.js'
 import { stripAgentPrefix } from './task-types.js'
 import type { InboundMessage } from '../types.js'
+
+// ── Tool I/O types ────────────────────────────────────────────────────────────
+
+export interface CancelTaskToolInput {
+  task_id: string
+}
+
+export interface CancelTaskToolOutput {
+  cancelled: boolean
+}
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
@@ -19,10 +29,10 @@ export interface CancelTaskToolDeps {
   sendToAgent: (agentId: string, message: InboundMessage) => Promise<void>
 }
 
-export function createCancelTaskTool(deps: CancelTaskToolDeps): Tool {
+export function createCancelTaskTool(deps: CancelTaskToolDeps) {
   const { taskManager, agentId, sendToAgent } = deps
 
-  return {
+  return defineTool<CancelTaskToolInput, CancelTaskToolOutput>({
     name: 'cancel_task',
     description: `Cancel a task and notify all active workers.
 Workers will be notified asynchronously. Already-completed subtasks are not affected.`,
@@ -37,9 +47,7 @@ Workers will be notified asynchronously. Already-completed subtasks are not affe
       required: ['task_id'],
     },
 
-    async handler(args: unknown): Promise<unknown> {
-      const { task_id } = args as { task_id: string }
-
+    async handler({ task_id }) {
       // 1. Fetch the task before cancelling so we can identify sent subtasks
       const task = await taskManager.getTask(task_id)
 
@@ -72,5 +80,5 @@ Workers will be notified asynchronously. Already-completed subtasks are not affe
 
       return { cancelled: true }
     },
-  }
+  })
 }
