@@ -28,6 +28,14 @@ class WebSocketConnection implements IpcConnection {
   close(): void {
     this.ws.close()
   }
+
+  /** Resolves once the underlying WebSocket 'close' event fires. */
+  waitForClose(): Promise<void> {
+    if (this.ws.readyState === WebSocket.CLOSED) return Promise.resolve()
+    return new Promise((resolve) => {
+      this.ws.once('close', () => resolve())
+    })
+  }
 }
 
 export class IpcServerImpl implements IpcServer {
@@ -106,10 +114,17 @@ export class IpcServerImpl implements IpcServer {
   }
 
   async stop(): Promise<void> {
-    // Close all connections
+    // Register close-wait promises BEFORE calling close(), then close all connections.
+    // This ensures disconnect handlers fire (and logger writes complete) before
+    // the caller proceeds to close the logger stream.
+    const closePromises: Promise<void>[] = []
     for (const conn of this.connections.values()) {
+      if (conn instanceof WebSocketConnection) {
+        closePromises.push(conn.waitForClose())
+      }
       conn.close()
     }
+    await Promise.all(closePromises)
     this.connections.clear()
 
     // Close WebSocket server
