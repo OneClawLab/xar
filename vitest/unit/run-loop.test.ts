@@ -37,6 +37,16 @@ vi.mock('../../src/agent/turn.js', () => ({
   processTurn: vi.fn(async () => ({ newMessages: [] })),
 }))
 
+vi.mock('../../src/agent/thread-lib.js', () => ({
+  openOrCreateThread: vi.fn(async () => ({
+    push: vi.fn(async (ev: { source: string; type: 'message' | 'record'; content: string }) => ({
+      id: 1, source: ev.source, type: ev.type, subtype: null, created_at: new Date().toISOString(), content: ev.content,
+    })),
+    pushBatch: vi.fn(async () => []),
+    peek: vi.fn(async () => []),
+  })),
+}))
+
 vi.mock('../../src/config.js', () => ({
   getDaemonConfig: vi.fn(() => ({ theClawHome: '/tmp/test-home', ipcPort: 28213, logLevel: 'info' })),
 }))
