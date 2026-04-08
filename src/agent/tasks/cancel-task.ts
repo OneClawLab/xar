@@ -1,5 +1,5 @@
 /**
- * cancel_task tool — allows the orchestrator agent to cancel an in-progress task.
+ * cancel_agent_task tool — allows the orchestrator agent to cancel an in-progress agent task.
  *
  * Cancels the Task via TaskManager, then sends cancellation notifications to all
  * workers with status=sent. Cancellation messages are fire-and-forget (no reply_to).
@@ -29,17 +29,17 @@ export interface CancelTaskToolDeps {
   sendToAgent: (agentId: string, message: InboundMessage) => Promise<void>
 }
 
-const CANCEL_TASK_TOOL_DESC = `
-Cancel a task and notify all active workers.
+const CANCEL_AGENT_TASK_TOOL_DESC = `
+Cancel an agent task and notify all active workers.
 Workers will be notified asynchronously. Already-completed subtasks are not affected.
 `.trim();
 
-export function createCancelTaskTool(deps: CancelTaskToolDeps) {
+export function createCancelAgentTaskTool(deps: CancelTaskToolDeps) {
   const { taskManager, agentId, sendToAgent } = deps
 
   return defineTool<CancelTaskToolInput, CancelTaskToolOutput>({
-    name: 'cancel_task',
-    description: CANCEL_TASK_TOOL_DESC,
+    name: 'cancel_agent_task',
+    description: CANCEL_AGENT_TASK_TOOL_DESC,
     parameters: {
       type: 'object',
       properties: {

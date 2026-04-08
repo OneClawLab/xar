@@ -355,9 +355,109 @@ async function processMessage(agentId: string, msg: InboundMessage) {
 
 tool call（`bash_exec`）由 **pai lib 内部处理**，xar 不拦截。xar 在调用 `pai.chat()` 时传入 `createBashExecTool()`，具体执行逻辑保持在 pai 内部。
 
-#### send_message Tool
+#### Agent Task Tools
 
-`send_message` 是 xar 注册给 LLM 的内置 tool，与 `bash_exec` 并列，使 agent 能主动向任意 peer（人类）或其他 agent 发送消息。通过 `extraTools` 参数传入 `processTurn`。
+`create_agent_task`、`cancel_agent_task`、`steer_agent_task` 是 xar 注册给 LLM 的内置 tools，用于 orchestrator agent 向具名 worker agent 派发、取消和调整任务。通过 `extraTools` 参数传入 `processTurn`。
+
+这些 tools 适用于**持久具名 agent** 之间的协作——每个 worker agent 有自己的 `IDENTITY.md` 和预定义行为规范。对于短暂的、无需 agent 身份的一次性 LLM 推理任务，应使用 `spawn_adhoc_task`（见下文）。
+
+**create_agent_task Tool Schema**：
+
+```json
+{
+  "name": "create_agent_task",
+  "description": "Create a task with one or more subtasks delegated to named worker agents. ...",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "subtasks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "worker": { "type": "string", "description": "\"agent:<agent_id>\" — the worker agent to delegate to" },
+            "instruction": { "type": "string", "description": "Task description delegated to the worker" }
+          },
+          "required": ["worker", "instruction"]
+        }
+      },
+      "wait_all": {
+        "type": "boolean",
+        "description": "true: wait for all subtasks to complete and receive a summary turn; false: fire-and-forget"
+      }
+    },
+    "required": ["subtasks", "wait_all"]
+  }
+}
+```
+
+**cancel_agent_task Tool Schema**：
+
+```json
+{
+  "name": "cancel_agent_task",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "task_id": { "type": "string" }
+    },
+    "required": ["task_id"]
+  }
+}
+```
+
+**steer_agent_task Tool Schema**：
+
+```json
+{
+  "name": "steer_agent_task",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "task_id": { "type": "string" },
+      "worker": { "type": "string", "description": "\"agent:<agent_id>\"" },
+      "new_instruction": { "type": "string" }
+    },
+    "required": ["task_id", "worker", "new_instruction"]
+  }
+}
+```
+
+#### spawn_adhoc_task Tool
+
+`spawn_adhoc_task` 是 xar 注册给 LLM 的内置 tool，用于在隔离上下文中执行短暂的、无需 agent 身份的一次性 LLM 推理任务。底层调用 `pai.chat()`，上下文完全隔离，不继承当前 agent 的 session。
+
+适用场景：
+- 需要隔离上下文的子推理任务（避免污染主 context）
+- 并发执行多个独立的 LLM 推理
+- 临时性任务，不需要持久 agent 身份或 IDENTITY.md
+
+不适用场景：
+- 需要与具名 agent 协作 → 使用 `create_agent_task`
+- 需要 steer/cancel 正在进行的任务 → 使用 `steer_agent_task` / `cancel_agent_task`
+
+**spawn_adhoc_task Tool Schema**：
+
+```json
+{
+  "name": "spawn_adhoc_task",
+  "description": "Spawn a short-lived anonymous LLM task in an isolated context. Use for self-contained reasoning that doesn't require a persistent named agent. Supports concurrent execution of multiple independent subtasks.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "instruction": {
+        "type": "string",
+        "description": "The full prompt/instruction for the adhoc task"
+      },
+      "context": {
+        "type": "string",
+        "description": "Optional additional context to inject (e.g. relevant data, constraints)"
+      }
+    },
+    "required": ["instruction"]
+  }
+}
+```
 
 **Tool Schema**：
 

@@ -425,6 +425,43 @@ run_cmd $XAR stop "$AID" 2>/dev/null
 [[ $EC -eq 0 || $EC -eq 1 ]] && pass "orchestrator stopped (exit=$EC)" || fail "orchestrator stop failed (exit=$EC)"
 sleep 2
 
+section "15e. spawn_adhoc_task — restart daemon for clean state"
+run_cmd $XAR daemon stop 2>/dev/null; sleep 1; run_cmd $XAR daemon start
+assert_exit0
+sleep 1
+
+section "15e. spawn_adhoc_task — start agent"
+run_cmd $XAR start "$AID"
+assert_exit0
+sleep 2
+
+section "15e. spawn_adhoc_task — send prompt that triggers spawn_adhoc_task"
+ADHOC_CONV_ID="adhoc-conv-$"
+ADHOC_PEER="adhoc-peer-$"
+ADHOC_SOURCE="external:cli:main:dm:${ADHOC_CONV_ID}:${ADHOC_PEER}"
+ADHOC_SESS="${AGENT_DIR}/sessions/peers/${ADHOC_PEER}.jsonl"
+
+run_cmd $XAR send "$AID" \
+  "Use the spawn_adhoc_task tool with instruction='Reply with exactly: ADHOC_OK' and no context. Then tell me what it returned." \
+  --source "$ADHOC_SOURCE"
+assert_exit0
+assert_contains "delivered"
+
+section "15e. spawn_adhoc_task — wait for agent reply"
+wait_for "agent replied after adhoc task" 60 \
+  'grep -q "ADHOC_OK" "$ADHOC_SESS" 2>/dev/null' \
+  -- "tail -20 ${THECLAW_HOME:-$HOME/.theclaw}/logs/agent-${AID}.log 2>/dev/null || echo 'no log'"
+
+section "15e. spawn_adhoc_task — verify ADHOC_OK in session"
+run_cmd cat "$ADHOC_SESS"
+assert_exit0
+assert_contains "ADHOC_OK"
+
+section "15e. spawn_adhoc_task — stop agent"
+run_cmd $XAR stop "$AID"
+assert_exit0
+sleep 1
+
 section "15d. a2a — final assertion: full chain verified"
 # The complete a2a chain is proven:
 #   human → orchestrator (intermediate reply) → send_message → worker

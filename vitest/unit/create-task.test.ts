@@ -1,5 +1,5 @@
 /**
- * Unit tests for create_task tool
+ * Unit tests for create_agent_task tool
  * Requirements: 1.4, 2.1, 2.2
  */
 
@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { TaskManager } from '../../src/agent/tasks/task-manager.js'
-import { createCreateTaskTool } from '../../src/agent/tasks/create-task.js'
+import { createCreateAgentTaskTool } from '../../src/agent/tasks/create-task.js'
 import type { InboundMessage } from '../../src/types.js'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -43,10 +43,10 @@ afterEach(async () => {
 
 // ── Normal case ───────────────────────────────────────────────────────────────
 
-describe('create_task handler — normal case', () => {
+describe('create_agent_task handler — normal case', () => {
   it('creates task and returns { task_id, status }', async () => {
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCreateTaskTool(
+    const tool = createCreateAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -63,7 +63,7 @@ describe('create_task handler — normal case', () => {
 
   it('sendToAgent is called once per subtask', async () => {
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCreateTaskTool(
+    const tool = createCreateAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -84,7 +84,7 @@ describe('create_task handler — normal case', () => {
 
   it('delegation message has reply_to set to agent:<agentId>', async () => {
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCreateTaskTool(
+    const tool = createCreateAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -100,7 +100,7 @@ describe('create_task handler — normal case', () => {
 
   it('delegation message source starts with internal:task:', async () => {
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCreateTaskTool(
+    const tool = createCreateAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -115,7 +115,7 @@ describe('create_task handler — normal case', () => {
   })
 
   it('wait_all=true → status is "waiting"', async () => {
-    const tool = createCreateTaskTool(makeDeps(manager, async () => {}))
+    const tool = createCreateAgentTaskTool(makeDeps(manager, async () => {}))
 
     const result = (await tool.handler({
       subtasks: [{ worker: 'agent:worker-1', instruction: 'go' }],
@@ -126,7 +126,7 @@ describe('create_task handler — normal case', () => {
   })
 
   it('wait_all=false → status is "pending"', async () => {
-    const tool = createCreateTaskTool(makeDeps(manager, async () => {}))
+    const tool = createCreateAgentTaskTool(makeDeps(manager, async () => {}))
 
     const result = (await tool.handler({
       subtasks: [{ worker: 'agent:worker-1', instruction: 'go' }],
@@ -138,7 +138,7 @@ describe('create_task handler — normal case', () => {
 
   it('worker address without "agent:" prefix is also accepted', async () => {
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCreateTaskTool(
+    const tool = createCreateAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -156,9 +156,9 @@ describe('create_task handler — normal case', () => {
 
 // ── sendToAgent failure ───────────────────────────────────────────────────────
 
-describe('create_task handler — sendToAgent failure', () => {
+describe('create_agent_task handler — sendToAgent failure', () => {
   it('sendToAgent throws → error propagates', async () => {
-    const tool = createCreateTaskTool(
+    const tool = createCreateAgentTaskTool(
       makeDeps(manager, async () => {
         throw new Error('network error')
       }),

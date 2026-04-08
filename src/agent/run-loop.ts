@@ -21,9 +21,10 @@ import type { IpcConnection } from '../ipc/types.js'
 import type { Logger } from '../logging.js'
 import { processTurn } from './turn.js'
 import { createSendMessageTool, splitTarget, deliverToPeer, findPeerSource } from './send-message.js'
-import { createCreateTaskTool } from './tasks/create-task.js'
-import { createCancelTaskTool } from './tasks/cancel-task.js'
-import { createSteerTaskTool } from './tasks/steer-task.js'
+import { createCreateAgentTaskTool } from './tasks/create-task.js'
+import { createCancelAgentTaskTool } from './tasks/cancel-task.js'
+import { createSteerAgentTaskTool } from './tasks/steer-task.js'
+import { createSpawnAdhocTaskTool } from './tasks/spawn-adhoc-task.js'
 import { TaskManager } from './tasks/task-manager.js'
 import { MidTurnInjector } from './mid-turn.js'
 import { openOrCreateThread } from './thread-lib.js'
@@ -268,7 +269,7 @@ export class RunLoopImpl implements RunLoop {
       nextStreamSeq: () => ++this.streamSeq,
     })
 
-    const createTaskTool = createCreateTaskTool({
+    const createAgentTaskTool = createCreateAgentTaskTool({
       taskManager,
       agentId: this.agentId,
       originThreadId: threadId,
@@ -277,16 +278,22 @@ export class RunLoopImpl implements RunLoop {
       sendToAgent: sendToAgentAsync,
     })
 
-    const cancelTaskTool = createCancelTaskTool({
+    const cancelAgentTaskTool = createCancelAgentTaskTool({
       taskManager,
       agentId: this.agentId,
       sendToAgent: sendToAgentAsync,
     })
 
-    const steerTaskTool = createSteerTaskTool({
+    const steerAgentTaskTool = createSteerAgentTaskTool({
       taskManager,
       agentId: this.agentId,
       sendToAgent: sendToAgentAsync,
+    })
+
+    const spawnAdhocTaskTool = createSpawnAdhocTaskTool({
+      pai: this.pai,
+      provider: config.pai.provider,
+      model: config.pai.model,
     })
 
     // Mid-turn injector for checking new Human messages during tool call loop
@@ -307,7 +314,7 @@ export class RunLoopImpl implements RunLoop {
       maxAttempts: config.retry.max_attempts,
       logger: this.logger,
       extraEnv,
-      extraTools: [sendMessageTool, createTaskTool, cancelTaskTool, steerTaskTool],
+      extraTools: [sendMessageTool, createAgentTaskTool, cancelAgentTaskTool, steerAgentTaskTool, spawnAdhocTaskTool],
       midTurnInjector,
       initialLastCheckedEventId: currentOriginEventId,
       callbacks: {

@@ -1,7 +1,9 @@
 /**
- * create_task tool — allows the orchestrator agent to fan-out work to worker agents.
+ * create_agent_task tool — allows the orchestrator agent to fan-out work to named worker agents.
  *
  * Creates a Task via TaskManager, then sends delegation messages to each worker.
+ * Use this for persistent named agents with their own IDENTITY.md and behavior specs.
+ * For short-lived, anonymous LLM subtasks, use spawn_adhoc_task instead.
  * Requirements: 1.1, 1.2, 1.3, 1.4, 2.5
  */
 
@@ -33,21 +35,22 @@ export interface CreateTaskToolDeps {
   sendToAgent: (agentId: string, message: InboundMessage) => Promise<void>
 }
 
-const CREATE_TASK_TOOL_DESC = `
-Create a task with one or more subtasks delegated to worker agents.
-Use this when you need to:
+const CREATE_AGENT_TASK_TOOL_DESC = `
+Create a task with one or more subtasks delegated to named worker agents.
+Use this when you need to collaborate with persistent agents that have their own identity and behavior specs (IDENTITY.md).
 - Fan out work to multiple agents and wait for all results
 - Delegate a task to a single agent and wait for the result
 Set wait_all=true to receive a summary turn when all subtasks complete.
 Set wait_all=false for fire-and-forget delegation.
+For short-lived anonymous LLM reasoning (no persistent agent needed), use spawn_adhoc_task instead.
 `.trim();
 
-export function createCreateTaskTool(deps: CreateTaskToolDeps) {
+export function createCreateAgentTaskTool(deps: CreateTaskToolDeps) {
   const { taskManager, agentId, originThreadId, originEventId, replyTarget, sendToAgent } = deps
 
   return defineTool<CreateTaskToolInput, CreateTaskToolOutput>({
-    name: 'create_task',
-    description: CREATE_TASK_TOOL_DESC,
+    name: 'create_agent_task',
+    description: CREATE_AGENT_TASK_TOOL_DESC,
     parameters: {
       type: 'object',
       properties: {

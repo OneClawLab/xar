@@ -1,5 +1,5 @@
 /**
- * Unit tests for cancel_task tool
+ * Unit tests for cancel_agent_task tool
  * Requirements: 1.4, 2.1, 2.2
  */
 
@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { TaskManager } from '../../src/agent/tasks/task-manager.js'
-import { createCancelTaskTool } from '../../src/agent/tasks/cancel-task.js'
+import { createCancelAgentTaskTool } from '../../src/agent/tasks/cancel-task.js'
 import type { InboundMessage } from '../../src/types.js'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -53,10 +53,10 @@ afterEach(async () => {
 
 // ── Normal case ───────────────────────────────────────────────────────────────
 
-describe('cancel_task handler — normal case', () => {
+describe('cancel_agent_task handler — normal case', () => {
   it('cancels task and returns { cancelled: true }', async () => {
     const taskId = await createTask(manager, ['worker-1'])
-    const tool = createCancelTaskTool(makeDeps(manager, async () => {}))
+    const tool = createCancelAgentTaskTool(makeDeps(manager, async () => {}))
 
     const result = await tool.handler({ task_id: taskId })
 
@@ -66,7 +66,7 @@ describe('cancel_task handler — normal case', () => {
   it('sends cancellation to each sent subtask worker', async () => {
     const taskId = await createTask(manager, ['worker-1', 'worker-2'])
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCancelTaskTool(
+    const tool = createCancelAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -81,7 +81,7 @@ describe('cancel_task handler — normal case', () => {
   it('cancellation messages have NO reply_to field', async () => {
     const taskId = await createTask(manager, ['worker-1'])
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCancelTaskTool(
+    const tool = createCancelAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -95,9 +95,9 @@ describe('cancel_task handler — normal case', () => {
 
 // ── Task doesn't exist ────────────────────────────────────────────────────────
 
-describe('cancel_task handler — task not found', () => {
+describe('cancel_agent_task handler — task not found', () => {
   it('returns { cancelled: false } when task_id does not exist', async () => {
-    const tool = createCancelTaskTool(makeDeps(manager, async () => {}))
+    const tool = createCancelAgentTaskTool(makeDeps(manager, async () => {}))
 
     const result = await tool.handler({ task_id: 'no-such-task' })
 
@@ -106,7 +106,7 @@ describe('cancel_task handler — task not found', () => {
 
   it('does not call sendToAgent when task does not exist', async () => {
     let called = false
-    const tool = createCancelTaskTool(
+    const tool = createCancelAgentTaskTool(
       makeDeps(manager, async () => {
         called = true
       }),
@@ -120,7 +120,7 @@ describe('cancel_task handler — task not found', () => {
 
 // ── Only sends to status=sent subtasks ───────────────────────────────────────
 
-describe('cancel_task handler — only cancels sent subtasks', () => {
+describe('cancel_agent_task handler — only cancels sent subtasks', () => {
   it('does not send cancellation to done subtasks', async () => {
     const taskId = await createTask(manager, ['worker-1', 'worker-2'])
 
@@ -128,7 +128,7 @@ describe('cancel_task handler — only cancels sent subtasks', () => {
     await manager.handleAnnounce(taskId, 'worker-1', 'result', false)
 
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCancelTaskTool(
+    const tool = createCancelAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),
@@ -153,7 +153,7 @@ describe('cancel_task handler — only cancels sent subtasks', () => {
     })
 
     const sent: Array<{ agentId: string; msg: InboundMessage }> = []
-    const tool = createCancelTaskTool(
+    const tool = createCancelAgentTaskTool(
       makeDeps(manager, async (agentId, msg) => {
         sent.push({ agentId, msg })
       }),

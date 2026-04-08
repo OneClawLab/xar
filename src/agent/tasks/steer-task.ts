@@ -1,6 +1,6 @@
 /**
- * steer_task tool — allows the orchestrator to send a revised instruction to an
- * in-flight worker subtask.
+ * steer_agent_task tool — allows the orchestrator to send a revised instruction to an
+ * in-flight named worker agent subtask.
  *
  * Flow:
  *   1. TaskManager.steerTask() archives the old instruction, issues a new delegation_id.
@@ -39,19 +39,19 @@ export interface SteerTaskToolDeps {
   sendToAgent: (agentId: string, message: InboundMessage) => Promise<void>
 }
 
-const STEER_TASK_TOOL_DESC = `
-Send a revised instruction to an in-flight worker subtask.
-Use this when you want to change or refine what a worker is doing before it finishes.
+const STEER_AGENT_TASK_TOOL_DESC = `
+Send a revised instruction to an in-flight named worker agent subtask.
+Use this when you want to change or refine what a worker agent is doing before it finishes.
 Only works on subtasks that are still in-flight (status=sent).
 The worker will receive the new instruction as a new turn; its reply will be reported back as usual.
 `.trim();
 
-export function createSteerTaskTool(deps: SteerTaskToolDeps) {
+export function createSteerAgentTaskTool(deps: SteerTaskToolDeps) {
   const { taskManager, agentId, sendToAgent } = deps
 
   return defineTool<SteerTaskToolInput, SteerTaskToolOutput>({
-    name: 'steer_task',
-    description: STEER_TASK_TOOL_DESC,
+    name: 'steer_agent_task',
+    description: STEER_AGENT_TASK_TOOL_DESC,
     parameters: {
       type: 'object',
       properties: {
