@@ -193,7 +193,7 @@ export class RunLoopImpl implements RunLoop {
   }
 
   /**
-   * Execute a Turn (LLM call) and write results to thread.
+   * Execute a Turn and write results to thread.
    * Returns the new messages produced.
    */
   private async executeTurn(params: {

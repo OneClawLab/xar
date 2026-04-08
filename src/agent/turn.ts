@@ -65,11 +65,16 @@ export interface TurnParams {
   extraTools?: Tool[]
   /** Extra environment variables to inject into bash_exec tool */
   extraEnv?: Record<string, string> | undefined
-  /** Optional mid-turn injector: checks for new Human messages after each tool call */
+  /**
+   * Optional mid-turn injector: checks for new Human messages between tool-call
+   * rounds inside pai.chat, via the onBeforeNextTurn hook.
+   */
   midTurnInjector?: MidTurnInjector | undefined
-  /** Initial lastCheckedEventId for mid-turn injection; defaults to 0 (scans all history).
-   *  Should be set to the thread's latest event id at turn start to avoid re-injecting
-   *  historical messages. */
+  /**
+   * Initial lastCheckedEventId for mid-turn injection.
+   * Should be set to the thread's latest event id at turn start to avoid
+   * re-injecting historical messages.
+   */
   initialLastCheckedEventId?: number | undefined
 }
 
@@ -117,6 +122,7 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
     chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId,
     maxAttempts, logger, callbacks, extraTools, extraEnv, midTurnInjector,
   } = params
+
   const { contextWindow: cw, maxOutputTokens: mo, inputBudget } = computeInputBudget(
     params.contextWindow, params.maxOutputTokens,
   )
@@ -166,24 +172,30 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
 
     const controller = new AbortController()
 
-    // Mid-turn injection state: messages to prepend to the next LLM call's history
-    let midTurnInjections: Message[] = []
+    // Build the onBeforeNextTurn hook if a midTurnInjector is provided.
+    // This runs inside pai.chat between tool-call rounds, before the next HTTP call.
     let lastCheckedEventId = params.initialLastCheckedEventId ?? 0
+    const hooks = midTurnInjector
+      ? {
+          onBeforeNextTurn: async (_messages: readonly Message[]): Promise<Message[]> => {
+            try {
+              const injection = await midTurnInjector.checkAndInject(lastCheckedEventId)
+              if (!injection) return []
+              lastCheckedEventId = injection.newLastCheckedId
+              logger.info(`Mid-turn injection: ${injection.messages.length} messages injected`)
+              return injection.messages
+            } catch {
+              return []
+            }
+          },
+        }
+      : undefined
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        logger.info(`LLM call: attempt=${attempt + 1}/${maxAttempts} provider=${provider} model=${model}`)
+        logger.info(`LLM turn: attempt=${attempt + 1}/${maxAttempts} provider=${provider} model=${model}`)
 
-        // Build effective chatInput: append any mid-turn injections to history
-        const effectiveChatInput: ChatInput = midTurnInjections.length > 0
-          ? {
-              ...chatInput,
-              history: [...(chatInput.history ?? []), ...newMessages, ...midTurnInjections],
-              userMessage: '',
-            }
-          : chatInput
-
-        for await (const event of pai.chat(effectiveChatInput, { provider, model, stream: stream ?? true }, tokenWriter, tools, controller.signal)) {
+        for await (const event of pai.chat(chatInput, { provider, model, stream: stream ?? true }, tokenWriter, tools, controller.signal, hooks)) {
           if (event.type === 'thinking_delta') {
             await callbacks.onThinkingDelta(event.delta)
           }
@@ -192,33 +204,12 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
           }
           if (event.type === 'tool_result') {
             await callbacks.onToolResult(event.result)
-            // Mid-turn injection: check for new Human messages after each tool call
-            if (midTurnInjector) {
-              try {
-                const injection = await midTurnInjector.checkAndInject(lastCheckedEventId)
-                if (injection) {
-                  midTurnInjections = [...midTurnInjections, ...injection.messages]
-                  lastCheckedEventId = injection.newLastCheckedId
-                  logger.info(`Mid-turn injection: ${injection.messages.length} messages injected`)
-                }
-              } catch {
-                // Non-fatal: skip injection on error
-              }
-            }
           }
           if (event.type === 'chat_end') {
             for (const m of event.newMessages) {
               newMessages.push(m)
             }
           }
-        }
-
-        // If we have pending mid-turn injections after this LLM call, do another round
-        if (midTurnInjections.length > 0) {
-          midTurnInjections = []
-          // Continue the loop for another LLM call with injected context
-          logger.info(`Mid-turn injections processed, continuing Turn`)
-          continue
         }
 
         logger.info(`LLM call succeeded: attempt=${attempt + 1}`)
