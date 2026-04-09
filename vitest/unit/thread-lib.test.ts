@@ -3,7 +3,7 @@ import { join } from 'path'
 import { getThreadLib, openOrCreateThread, threadExists } from '../../src/agent/thread-lib.js'
 
 vi.mock('../../src/config.js', () => ({
-  getDaemonConfig: vi.fn(() => ({ theClawHome: '/tmp/theclaw-test', ipcPort: 28213, logLevel: 'info' })),
+  getDaemonConfig: vi.fn(() => ({ theClawHome: '/tmp/theclaw-test', ipcPort: 29211, logLevel: 'info' })),
 }))
 
 vi.mock('thread', () => ({

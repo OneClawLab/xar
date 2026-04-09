@@ -22,7 +22,7 @@ describe('createInitCommand', () => {
   async function runInit(id: string, opts: { provider?: string; model?: string; kind?: string } = {}) {
     // Mock getDaemonConfig to use our temp dir
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 28213, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 29211, logLevel: 'info' }),
     }))
     // Mock pai so we don't need real config
     vi.doMock('pai', () => ({
@@ -52,7 +52,7 @@ describe('createInitCommand', () => {
 
   it('creates agent directory structure', async () => {
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 28213, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 29211, logLevel: 'info' }),
     }))
     vi.doMock('pai', () => ({
       initPai: async () => ({
@@ -77,7 +77,7 @@ describe('createInitCommand', () => {
 
   it('creates config.json with correct fields', async () => {
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 28213, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 29211, logLevel: 'info' }),
     }))
     vi.doMock('pai', () => ({
       initPai: async () => ({
@@ -108,7 +108,7 @@ describe('createInitCommand', () => {
 
   it('creates IDENTITY.md and USAGE.md', async () => {
     vi.doMock('../../src/config.js', () => ({
-      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 28213, logLevel: 'info' }),
+      getDaemonConfig: () => ({ theClawHome: tmpHome, ipcPort: 29211, logLevel: 'info' }),
     }))
     vi.doMock('pai', () => ({
       initPai: async () => ({

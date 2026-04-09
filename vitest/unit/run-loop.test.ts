@@ -48,7 +48,7 @@ vi.mock('../../src/agent/thread-lib.js', () => ({
 }))
 
 vi.mock('../../src/config.js', () => ({
-  getDaemonConfig: vi.fn(() => ({ theClawHome: '/tmp/test-home', ipcPort: 28213, logLevel: 'info' })),
+  getDaemonConfig: vi.fn(() => ({ theClawHome: '/tmp/test-home', ipcPort: 29211, logLevel: 'info' })),
 }))
 
 import { RunLoopImpl } from '../../src/agent/run-loop.js'
@@ -186,7 +186,7 @@ describe('RunLoopImpl — worker announce & task state machine', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     tmpDir = await mkdtemp(join(tmpdir(), 'run-loop-test-'))
-    vi.mocked(getDaemonConfig).mockReturnValue({ theClawHome: tmpDir, ipcPort: 28213, logLevel: 'info' })
+    vi.mocked(getDaemonConfig).mockReturnValue({ theClawHome: tmpDir, ipcPort: 29211, logLevel: 'info' })
     vi.mocked(loadAgentConfig).mockResolvedValue({
       agent_id: AGENT_ID, kind: 'user',
       pai: { provider: 'anthropic', model: 'claude-3' },
@@ -285,7 +285,7 @@ describe('RunLoopImpl — worker announce & task state machine', () => {
 describe('RunLoopImpl — determineEventType record path', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(getDaemonConfig).mockReturnValue({ theClawHome: '/tmp/test-home', ipcPort: 28213, logLevel: 'info' })
+    vi.mocked(getDaemonConfig).mockReturnValue({ theClawHome: '/tmp/test-home', ipcPort: 29211, logLevel: 'info' })
   })
 
   it('group message with mentioned=false is stored as record — no processTurn call', async () => {

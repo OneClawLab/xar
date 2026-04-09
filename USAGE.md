@@ -24,7 +24,7 @@ xar daemon start
 
 Starts the daemon as a background process. The daemon:
 - Writes PID to `~/.theclaw/xar.pid`
-- Listens on TCP `127.0.0.1:28213`
+- Listens on TCP `127.0.0.1:29211`
 - Loads all agents with status `started`
 - Starts run-loops for each agent
 
@@ -540,7 +540,7 @@ pai model default --json
 
 **Solution:** Use different TCP port:
 ```bash
-XAR_IPC_PORT=28213 xar daemon start
+XAR_IPC_PORT=29211 xar daemon start
 ```
 
 ---
@@ -552,7 +552,7 @@ XAR_IPC_PORT=28213 xar daemon start
 export THECLAW_HOME=~/.theclaw
 
 # Set IPC TCP port
-export XAR_IPC_PORT=28213
+export XAR_IPC_PORT=29211
 
 # Set log level
 export XAR_LOG_LEVEL=debug
