@@ -125,7 +125,7 @@ export function buildTranscript(messages: SessionMessage[]): string {
  */
 export function compactStatePath(theClawHome: string, agentId: string, threadId: string): string {
   const safeId = threadId.replace(/[\\/]/g, '-')
-  return join(theClawHome, 'agents', agentId, 'sessions', `compact-state-${safeId}.json`)
+  return join(theClawHome, 'agents', agentId, 'memory', `thread-${safeId}.compact-state.json`)
 }
 
 /**

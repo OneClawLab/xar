@@ -91,9 +91,8 @@ Creates a new agent directory structure:
 - `~/.theclaw/agents/<id>/config.json` — Configuration
 - `~/.theclaw/agents/<id>/IDENTITY.md` — System prompt
 - `~/.theclaw/agents/<id>/USAGE.md` — Usage notes
-- `~/.theclaw/agents/<id>/sessions/` — LLM session files
-- `~/.theclaw/agents/<id>/memory/` — Memory files
-- `~/.theclaw/agents/<id>/threads/` — Conversation threads
+- `~/.theclaw/agents/<id>/memory/` — Memory files and compact state
+- `~/.theclaw/agents/<id>/threads/` — Conversation threads (SQLite)
 - `~/.theclaw/agents/<id>/workdir/` — Agent working directory
 - `~/.theclaw/agents/<id>/logs/` — Agent logs
 
@@ -192,8 +191,7 @@ Dir:      ~/.theclaw/agents/my-agent
 Status:   stopped
 Provider: my-azure / gpt-5.2
 Routing:  reactive/mention
-Inbox:    0 events (last: never)
-Sessions: 0 session file(s)
+Threads:  3 thread(s)
 ```
 
 **Output (JSON):**
@@ -295,7 +293,7 @@ Opens an interactive REPL for direct conversation with an agent. Bypasses the da
 **Features:**
 - Streams LLM responses to stdout in real time
 - Shows tool calls and results on stderr
-- Persists conversation in `sessions/peer-cli.jsonl`
+- Persists conversation in thread SQLite (`threads/peer-cli/events.db`)
 - Supports session compaction
 
 **Exit:** `Ctrl+C` or `Ctrl+D`

@@ -11,14 +11,21 @@ import { sendIpcMessage } from '../ipc/client.js'
 import { CliError } from '../types.js'
 import type { AgentConfig } from '../agent/types.js'
 
-async function getSessionCount(agentDir: string): Promise<number> {
-  try {
-    const sessionsDir = join(agentDir, 'sessions')
-    const entries = await fs.readdir(sessionsDir)
-    return entries.filter((e) => e.endsWith('.json')).length
-  } catch {
-    return 0
+async function getThreadCount(agentDir: string): Promise<number> {
+  // Count leaf thread directories (those containing events.db)
+  let count = 0
+  const threadsDir = join(agentDir, 'threads')
+  const walk = async (dir: string): Promise<void> => {
+    let entries: import('fs').Dirent[]
+    try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return }
+    const hasDb = entries.some(e => e.isFile() && e.name === 'events.db')
+    if (hasDb) { count++; return }
+    for (const e of entries) {
+      if (e.isDirectory()) await walk(join(dir, e.name))
+    }
   }
+  await walk(threadsDir)
+  return count
 }
 
 async function getMemoryFiles(agentDir: string): Promise<string[]> {
@@ -71,7 +78,7 @@ export function createStatusCommand(): Command {
           }
 
           // Gather disk info
-          const sessionCount = await getSessionCount(agentDir)
+          const threadCount = await getThreadCount(agentDir)
           const memoryFiles = await getMemoryFiles(agentDir)
 
           if (options.json) {
@@ -82,7 +89,7 @@ export function createStatusCommand(): Command {
               daemon_running: daemonRunning,
               pai: agentConfig.pai,
               routing: agentConfig.routing,
-              sessions: sessionCount,
+              threads: threadCount,
               memory_files: memoryFiles,
               ...runtimeStatus,
             }, null, 2))
@@ -93,7 +100,7 @@ export function createStatusCommand(): Command {
             console.log(`Status:   ${running ? 'running' : 'stopped'}`)
             console.log(`Provider: ${agentConfig.pai.provider} / ${agentConfig.pai.model}`)
             console.log(`Routing:  ${agentConfig.routing.mode}/${agentConfig.routing.trigger}`)
-            console.log(`Sessions: ${sessionCount} session file(s)`)
+            console.log(`Threads:  ${threadCount} thread(s)`)
             if (memoryFiles.length > 0) {
               console.log(`Memory:   ${memoryFiles.join(', ')}`)
             }

@@ -64,7 +64,7 @@ export function estimateTotalTokens(
 
 function stateFilePath(agentDir: string, threadId: string): string {
   const safeId = threadId.replace(/[\\/]/g, '-')
-  return join(agentDir, 'sessions', `compact-state-${safeId}.json`)
+  return join(agentDir, 'memory', `thread-${safeId}.compact-state.json`)
 }
 
 export interface CompactResult {

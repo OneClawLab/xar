@@ -47,7 +47,7 @@ xar/
 │   │   ├── router.ts             # 入站消息 → 目标 thread 分配
 │   │   ├── run-loop.ts           # 消息处理循环（per-agent async，持续运行）
 │   │   ├── send-message.ts       # send_message tool 实现（LLM 主动发送消息）
-│   │   ├── session.ts            # Session JSONL 读写、token 估算、compact state
+│   │   ├── session.ts            # Token 估算、compact state 读写
 │   │   ├── thread-lib.ts         # thread lib 封装（open/init/exists）
 │   │   └── types.ts              # Agent 相关类型定义
 │   ├── ipc/
@@ -81,18 +81,23 @@ xar/
         ├── IDENTITY.md           # Agent system prompt（角色、能力、行为准则）
         ├── USAGE.md              # 对外使用说明（给人类和其他 agent）
         ├── config.json           # Agent 配置（见 Agent 配置格式）
-        ├── sessions/             # pai chat session 文件（JSONL，per-thread）
-        │   ├── <thread_id>.jsonl
-        │   └── compact-state-<thread_id>.json  # compact 进度状态
-        ├── memory/               # Memory 文件（Markdown）
+        ├── memory/               # Memory 文件与 compact 状态
         │   ├── agent.md          # 跨所有 peer/thread 的记忆
         │   ├── user-<peer_id>.md # per-peer 跨 thread 的记忆
-        │   └── thread-<thread_id>.md  # per-thread 压缩摘要
-        ├── threads/              # Agent 私有 thread 目录
-        │   ├── peers/            # per-peer threads（routing=per-peer 时）
-        │   ├── conversations/    # per-conversation threads（routing=per-conversation 时）
-        │   └── main/             # per-agent 单一 thread（routing=per-agent 时）
-        ├── workdir/              # 临时工作区
+        │   ├── thread-<safe_thread_id>.md              # per-thread 压缩摘要（session compact 产物）
+        │   └── thread-<safe_thread_id>.compact-state.json  # compact 进度状态
+        │                         # safe_thread_id = threadId.replace(/[\\/]/g, '-')
+        │                         # 例：peers/owner → peers-owner
+        ├── threads/              # 主存储，append-only，source of truth（SQLite）
+        │   ├── peers/<peer_id>/  # reactive DM：per-peer thread
+        │   │   ├── events.db     # SQLite 事件数据库（WAL 模式）
+        │   │   ├── events.jsonl  # SQLite 写入时同步追加的文本副本
+        │   │   └── ...
+        │   ├── conversations/<conv_id>/peers/<peer_id>/  # reactive group
+        │   └── internal/<task_id>/  # agent task 内部 thread
+        ├── tasks/                # agent task 状态文件
+        │   └── <task_id>.json
+        ├── workdir/              # bash_exec 工具的工作目录
         └── logs/
             └── agent.log
 ```
@@ -565,18 +570,28 @@ tool call（`bash_exec`）由 **pai lib 内部处理**，xar 不拦截。xar 在
 
 ### 4. Memory 管理（Session Compact）
 
-每次 LLM 调用**前**，`run-loop.ts` 调用 `compactSession()`（`agent/memory.ts`）：
+每次 LLM 调用**前**，`processTurn()` 调用 `compactSession()`（`agent/memory.ts`）：
 
-1. 估算当前 session 文件的 token 数。
-2. 若超过 `CONTEXT_USAGE_THRESHOLD`（80%）或距上次 compact 超过 `COMPACT_INTERVAL_TURNS`（10 轮），触发压缩。
-3. 将旧对话分为 `toSummarize`（较早部分）和 `recentRaw`（最近 4096 token）。
-4. 调用 `pai.chat()` 对 `toSummarize` 生成摘要（支持增量合并已有摘要）。
-5. 重写 session 文件：`[system messages] + [summary message] + [recentRaw]`。
-6. 将摘要写入 `memory/thread-<threadId>.md`。
+1. 从 `memory/thread-<safeId>.compact-state.json` 读取 compact 状态（`turnCount`、`lastCompactedAt`、`compactedUpToEventId`）。
+2. `buildContext()` 根据 `compactedUpToEventId` 只从 SQLite 加载该 event id 之后的新 events，旧的已被摘要替代。
+3. 若 token 数超过 `CONTEXT_USAGE_THRESHOLD`（80%）或距上次 compact 超过 `COMPACT_INTERVAL_TURNS`（10 轮），触发压缩。
+4. 将 history 分为 `toSummarize`（较早部分）和 `recentRaw`（最近 4096 token）。
+5. 调用 `pai.chat()` 对 `toSummarize` 生成摘要（支持增量合并已有摘要）。
+6. 将摘要写入 `memory/thread-<safeId>.md`，更新 `compactedUpToEventId` 为被压缩的最后一个 event id。
+7. 当次 turn 使用压缩后的 history（`recentRaw`）调用 LLM；下次 turn 从 `compactedUpToEventId` 重建同样的结果。
 
-compact 失败不影响主流程（non-fatal，记录 warn 日志）。
+**system prompt 结构**：
+```
+identity (IDENTITY.md)
++ [memory/agent.md]          ← per-agent 全局记忆（可选）
++ [memory/user-<peer>.md]    ← per-peer 跨 thread 记忆（可选）
++ [memory/thread-<id>.md]    ← per-thread 摘要，即上次 compact 的产物（可选）
++ communication context
+```
 
-此逻辑对齐 `agent` repo 的 `runner/compactor.ts`，使用相同的 token 估算和分割算法。
+**history**：`compactedUpToEventId` 之后的新 events（未被压缩的部分）。
+
+compact 失败不影响主流程（non-fatal，记录 warn 日志）。SQLite thread 中的完整历史永远保留（append-only），compact 只影响当次 LLM 调用的 context 窗口。
 
 ### 5. 出站投递（双出站模型）
 

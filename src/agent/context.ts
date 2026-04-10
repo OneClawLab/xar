@@ -373,7 +373,7 @@ export async function buildContext(
   const config_ = getDaemonConfig()
   const agentDir = join(config_.theClawHome, 'agents', agentId)
   const safeId = threadId.replace(/[\\/]/g, '-')
-  const statePath = join(agentDir, 'sessions', `compact-state-${safeId}.json`)
+  const statePath = join(agentDir, 'memory', `thread-${safeId}.compact-state.json`)
 
   const compactState = await loadCompactState(statePath)
   const fromEventId = compactState.compactedUpToEventId ?? 0
