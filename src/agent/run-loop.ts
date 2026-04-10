@@ -214,10 +214,11 @@ export class RunLoopImpl implements RunLoop {
     const theClawHome = getDaemonConfig().theClawHome
     const providerInfo = await this.pai.getProviderInfo(config.pai.provider)
     const agentDir = join(theClawHome, 'agents', this.agentId)
-    const sessionFile = join(agentDir, 'sessions', `${threadId}.jsonl`)
+    const safeThreadId = threadId.replace(/[\\/]/g, '-')
+    const sessionFile = join(agentDir, 'sessions', `${safeThreadId}.jsonl`)
 
     const availableAgents = this.getRunningAgents?.() ?? []
-    const chatInput = await buildContext(
+    const { chatInput, eventIds } = await buildContext(
       this.agentId, config, threadStore, msg, threadId, availableAgents, taskContext,
     )
     this.logger.debug(`${this.agentId}: LLM context built`)
@@ -309,6 +310,7 @@ export class RunLoopImpl implements RunLoop {
       sessionFile,
       agentDir,
       threadId,
+      eventIds,
       contextWindow: providerInfo.contextWindow,
       maxOutputTokens: providerInfo.maxTokens,
       maxAttempts: config.retry.max_attempts,
@@ -320,7 +322,12 @@ export class RunLoopImpl implements RunLoop {
       callbacks: {
         onCompactStart: (reason) => deliver?.streamCompactStart(streamId, reason),
         onCompactEnd: (before, after) => deliver?.streamCompactEnd(streamId, before, after),
-        onCtxUsage: (total, budget, _pct) => deliver?.streamCtxUsage(streamId, total, budget),
+        onCtxUsage: (total, budget, _pct) => {
+          const pct = budget > 0 ? Math.round((total / budget) * 100) : 0
+          const toK = (n: number) => `${Math.round(n / 1000)}K`
+          this.logger.info(`ctx_usage: ${pct}% (${toK(total)}/${toK(budget)}) thread=${threadId}`)
+          deliver?.streamCtxUsage(streamId, total, budget)
+        },
         onStreamStart: () => deliver?.streamStart(streamId),
         onStreamEnd: () => deliver?.streamEnd(streamId),
         onStreamError: (error) => deliver?.streamError(streamId, error),

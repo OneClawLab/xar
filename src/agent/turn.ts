@@ -53,6 +53,8 @@ export interface TurnParams {
   sessionFile: string
   agentDir: string
   threadId: string
+  /** Parallel event ids for chatInput.history entries (for compact bookmarking) */
+  eventIds: number[]
   /** Provider-level context window (from pai config); falls back to 128K */
   contextWindow?: number | undefined
   /** Provider-level max output tokens; falls back to 4096 */
@@ -119,7 +121,7 @@ export function computeInputBudget(contextWindow?: number, maxOutputTokens?: num
  */
 export async function processTurn(params: TurnParams): Promise<TurnResult> {
   const {
-    chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId,
+    chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId, eventIds,
     maxAttempts, logger, callbacks, extraTools, extraEnv, midTurnInjector,
   } = params
 
@@ -132,10 +134,17 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
   // ── 1. Compact + ctx_usage ──────────────────────────────────────────────
 
   try {
+    // Convert chatInput.history to SessionMessage[] for compact
+    const historyForCompact: import('./session.js').SessionMessage[] = (chatInput.history ?? []).map((m) => ({
+      role: m.role as import('./session.js').SessionMessage['role'],
+      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+    }))
+
     const compactResult = await compactSession({
       agentDir,
       threadId,
-      sessionFile,
+      history: historyForCompact,
+      eventIds,
       systemPrompt: chatInput.system ?? '',
       userMessage: typeof chatInput.userMessage === 'string' ? chatInput.userMessage : JSON.stringify(chatInput.userMessage),
       pai,
@@ -146,7 +155,12 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
       logger,
     })
 
-    if (compactResult.compacted) {
+    if (compactResult.compacted && compactResult.newHistory) {
+      // Replace chatInput.history with compacted version
+      chatInput.history = compactResult.newHistory.map((m) => ({
+        role: m.role as Message['role'],
+        content: m.content,
+      }))
       await callbacks.onCompactStart(compactResult.reason ?? 'threshold')
       await callbacks.onCompactEnd(compactResult.before_tokens ?? 0, compactResult.after_tokens ?? 0)
       const totalTokens = compactResult.after_tokens ?? 0

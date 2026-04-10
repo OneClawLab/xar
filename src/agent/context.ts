@@ -11,6 +11,7 @@ import { getDaemonConfig } from '../config.js'
 import type { AgentConfig } from './types.js'
 import type { InboundMessage } from '../types.js'
 import { parseSource } from './router.js'
+import { loadCompactState } from './session.js'
 
 /**
  * Agent role for the current Turn, determined by detectRole.
@@ -114,29 +115,33 @@ async function loadMemory(agentId: string, peerId?: string, threadId?: string): 
 
   await tryRead('agent.md', 'Agent Memory')
   if (peerId) await tryRead(`user-${peerId}.md`, 'Peer Memory')
-  if (threadId) await tryRead(`thread-${threadId}.md`, 'Thread Memory')
+  if (threadId) {
+    const safeId = threadId.replace(/[\\/]/g, '-')
+    await tryRead(`thread-${safeId}.md`, 'Thread Memory')
+  }
 
   return parts.join('\n\n')
 }
 
 /**
- * Convert ThreadStore events to Message[] for LLM context
+ * Convert ThreadStore events to Message[] for LLM context.
+ * fromEventId: only load events with id > fromEventId (0 = load all).
+ * Returns messages paired with their event ids for compact bookmarking.
  */
-async function loadThreadHistory(threadStore: ThreadStore): Promise<Message[]> {
-  const events = await threadStore.peek({ lastEventId: 0, limit: 1000 })
+async function loadThreadHistory(
+  threadStore: ThreadStore,
+  fromEventId: number,
+): Promise<{ messages: Message[]; eventIds: number[] }> {
+  const events = await threadStore.peek({ lastEventId: fromEventId, limit: 1000 })
 
   const messages: Message[] = []
+  const eventIds: number[] = []
 
   for (const event of events) {
     if (event.type === 'message') {
-      // User message from external source
-      messages.push({
-        role: 'user',
-        content: event.content,
-      })
+      messages.push({ role: 'user', content: event.content })
+      eventIds.push(event.id)
     } else if (event.type === 'record') {
-      // Record from previous LLM turn — content may be a JSON-serialized envelope
-      // containing { content, tool_calls?, tool_call_id?, name? }
       let parsed: Record<string, unknown> | null = null
       try {
         const candidate = JSON.parse(event.content) as unknown
@@ -156,6 +161,7 @@ async function loadThreadHistory(threadStore: ThreadStore): Promise<Message[]> {
           msg.tool_calls = parsed['tool_calls'] as NonNullable<MessageWithToolCalls['tool_calls']>
         }
         messages.push(msg)
+        eventIds.push(event.id)
       } else if (event.source.startsWith('tool:')) {
         const toolName = event.source.substring('tool:'.length)
         const toolCallId = parsed?.['tool_call_id']
@@ -165,11 +171,12 @@ async function loadThreadHistory(threadStore: ThreadStore): Promise<Message[]> {
           name: (parsed?.['name'] as string | undefined) ?? toolName,
           ...(typeof toolCallId === 'string' && toolCallId ? { tool_call_id: toolCallId } : {}),
         })
+        eventIds.push(event.id)
       }
     }
   }
 
-  return messages
+  return { messages, eventIds }
 }
 
 /**
@@ -351,6 +358,8 @@ export async function buildCommunicationContext(
  * Build LLM context from agent config, thread history, and memory.
  * threadId is required so we can load the per-thread memory summary.
  * taskContext is optional and used to inform role detection and context generation.
+ *
+ * Returns chatInput plus eventIds (parallel array to history) for compact bookmarking.
  */
 export async function buildContext(
   agentId: string,
@@ -360,12 +369,20 @@ export async function buildContext(
   threadId: string,
   availableAgents?: string[],
   taskContext?: TaskSummaryContext,
-): Promise<ChatInput> {
+): Promise<{ chatInput: ChatInput; eventIds: number[] }> {
+  const config_ = getDaemonConfig()
+  const agentDir = join(config_.theClawHome, 'agents', agentId)
+  const safeId = threadId.replace(/[\\/]/g, '-')
+  const statePath = join(agentDir, 'sessions', `compact-state-${safeId}.json`)
+
+  const compactState = await loadCompactState(statePath)
+  const fromEventId = compactState.compactedUpToEventId ?? 0
+
   const peerId = extractPeerId(message.source)
-  const [identity, memory, history, commContext] = await Promise.all([
+  const [identity, memory, { messages: history, eventIds }, commContext] = await Promise.all([
     loadIdentity(agentId),
     loadMemory(agentId, peerId, threadId),
-    loadThreadHistory(threadStore),
+    loadThreadHistory(threadStore, fromEventId),
     buildCommunicationContext(agentId, message, config, threadStore, availableAgents ?? [], taskContext),
   ])
 
@@ -373,8 +390,11 @@ export async function buildContext(
   const systemPrompt = parts.join('\n\n')
 
   return {
-    system: systemPrompt,
-    history,
-    userMessage: message.content,
+    chatInput: {
+      system: systemPrompt,
+      history,
+      userMessage: message.content,
+    },
+    eventIds,
   }
 }

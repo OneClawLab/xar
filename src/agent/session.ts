@@ -17,6 +17,8 @@ export interface SessionMessage {
 export interface CompactState {
   turnCount: number
   lastCompactedAt: number
+  /** The last SQLite event id that was summarized away. Next load starts from this id + 1. 0 = no compaction yet. */
+  compactedUpToEventId: number
 }
 
 /**
@@ -153,7 +155,8 @@ export function buildTranscript(messages: SessionMessage[]): string {
  * Get compact state file path
  */
 export function compactStatePath(theClawHome: string, agentId: string, threadId: string): string {
-  return join(theClawHome, 'agents', agentId, 'sessions', `compact-state-${threadId}.json`)
+  const safeId = threadId.replace(/[\\/]/g, '-')
+  return join(theClawHome, 'agents', agentId, 'sessions', `compact-state-${safeId}.json`)
 }
 
 /**
@@ -164,7 +167,7 @@ export async function loadCompactState(statePath: string): Promise<CompactState>
     const raw = await fs.readFile(statePath, 'utf-8')
     return JSON.parse(raw) as CompactState
   } catch {
-    return { turnCount: 0, lastCompactedAt: 0 }
+    return { turnCount: 0, lastCompactedAt: 0, compactedUpToEventId: 0 }
   }
 }
 
