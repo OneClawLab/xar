@@ -4,7 +4,6 @@
 
 import { promises as fs } from 'fs'
 import { join, dirname } from 'path'
-
 export interface SessionMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
@@ -48,36 +47,6 @@ export function estimateTokens(text: string): number {
 export function estimateMessageTokens(msg: SessionMessage): number {
   const contentStr = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
   return estimateTokens(contentStr) + 4
-}
-
-/**
- * Load session messages from JSONL file
- */
-export async function loadSessionMessages(sessionFile: string): Promise<SessionMessage[]> {
-  try {
-    const raw = await fs.readFile(sessionFile, 'utf-8')
-    const messages: SessionMessage[] = []
-
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      const msg = JSON.parse(trimmed) as SessionMessage
-      messages.push(msg)
-    }
-
-    return messages
-  } catch {
-    return []
-  }
-}
-
-/**
- * Write session messages to JSONL file
- */
-export async function writeSessionMessages(sessionFile: string, messages: SessionMessage[]): Promise<void> {
-  const lines = messages.map((m) => JSON.stringify(m)).join('\n') + '\n'
-  await fs.mkdir(dirname(sessionFile), { recursive: true })
-  await fs.writeFile(sessionFile, lines, 'utf-8')
 }
 
 /**

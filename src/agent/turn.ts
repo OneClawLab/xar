@@ -11,12 +11,10 @@ import type { ChatInput, Message, Tool, Pai } from 'pai'
 import type { Writable } from 'node:stream'
 import type { MessageWithToolCalls } from '../types.js'
 import { compactSession } from './memory.js'
-import { estimateTokens, loadSessionMessages, writeSessionMessages } from './session.js'
+import { estimateTokens } from './session.js'
 import type { SessionMessage } from './session.js'
 import type { Logger } from '../logging.js'
 import type { MidTurnInjector } from './mid-turn.js'
-import { promises as fs } from 'node:fs'
-import { dirname } from 'node:path'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -41,16 +39,10 @@ export interface TurnCallbacks {
 export interface TurnParams {
   chatInput: ChatInput
   pai: Pai
-  /** Provider name from agent config */
   provider: string
-  /** Model name from agent config */
   model: string
-  /** Whether to stream tokens */
   stream?: boolean | undefined
-  /** Writable stream for token chunks (stdout for CLI, IpcChunkWriter for daemon) */
   tokenWriter: Writable | null
-  /** Session file path for compact */
-  sessionFile: string
   agentDir: string
   threadId: string
   /** Parallel event ids for chatInput.history entries (for compact bookmarking) */
@@ -121,7 +113,7 @@ export function computeInputBudget(contextWindow?: number, maxOutputTokens?: num
  */
 export async function processTurn(params: TurnParams): Promise<TurnResult> {
   const {
-    chatInput, pai, provider, model, stream, tokenWriter, sessionFile, agentDir, threadId, eventIds,
+    chatInput, pai, provider, model, stream, tokenWriter, agentDir, threadId, eventIds,
     maxAttempts, logger, callbacks, extraTools, extraEnv, midTurnInjector,
   } = params
 
@@ -249,31 +241,6 @@ export async function processTurn(params: TurnParams): Promise<TurnResult> {
         logger.warn(`LLM call failed (attempt=${attempt + 1}), retrying in ${delay}ms: ${lastError.message}`)
         await new Promise((resolve) => setTimeout(resolve, delay))
       }
-    }
-
-    // ── 3. Persist to session file ───────────────────────────────────────
-    try {
-      await fs.mkdir(dirname(sessionFile), { recursive: true })
-      const existing = await loadSessionMessages(sessionFile)
-      const userMsg: SessionMessage = {
-        role: 'user',
-        content: typeof chatInput.userMessage === 'string' ? chatInput.userMessage : JSON.stringify(chatInput.userMessage),
-        timestamp: new Date().toISOString(),
-      }
-      const newSessionMsgs: SessionMessage[] = newMessages.map((m) => {
-        const mw = m as MessageWithToolCalls
-        return {
-          role: m.role as SessionMessage['role'],
-          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-          timestamp: new Date().toISOString(),
-          ...(m.name !== undefined && { name: m.name }),
-          ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
-          ...(mw.tool_calls !== undefined && { tool_calls: mw.tool_calls }),
-        }
-      })
-      await writeSessionMessages(sessionFile, [...existing, userMsg, ...newSessionMsgs])
-    } catch (err) {
-      logger.warn(`Failed to write session file (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
     }
 
     await callbacks.onStreamEnd()

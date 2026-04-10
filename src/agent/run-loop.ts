@@ -215,7 +215,6 @@ export class RunLoopImpl implements RunLoop {
     const providerInfo = await this.pai.getProviderInfo(config.pai.provider)
     const agentDir = join(theClawHome, 'agents', this.agentId)
     const safeThreadId = threadId.replace(/[\\/]/g, '-')
-    const sessionFile = join(agentDir, 'sessions', `${safeThreadId}.jsonl`)
 
     const availableAgents = this.getRunningAgents?.() ?? []
     const { chatInput, eventIds } = await buildContext(
@@ -307,7 +306,6 @@ export class RunLoopImpl implements RunLoop {
       model: config.pai.model,
       stream: true,
       tokenWriter: chunkWriter,
-      sessionFile,
       agentDir,
       threadId,
       eventIds,

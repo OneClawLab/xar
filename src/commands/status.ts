@@ -15,7 +15,7 @@ async function getSessionCount(agentDir: string): Promise<number> {
   try {
     const sessionsDir = join(agentDir, 'sessions')
     const entries = await fs.readdir(sessionsDir)
-    return entries.filter((e) => e.endsWith('.jsonl')).length
+    return entries.filter((e) => e.endsWith('.json')).length
   } catch {
     return 0
   }

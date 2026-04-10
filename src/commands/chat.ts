@@ -14,12 +14,11 @@ import { promises as fs } from 'fs'
 import { Writable } from 'node:stream'
 import { Command } from 'commander'
 import { initPai } from 'pai'
-import type { Pai } from 'pai'
 import { getDaemonConfig } from '../config.js'
 import { loadAgentConfig } from '../agent/config.js'
-import { loadIdentity } from '../agent/context.js'
+import { buildContext } from '../agent/context.js'
 import { openOrCreateThread } from '../agent/thread-lib.js'
-import { processTurn, estimateChatInputTokens, computeInputBudget } from '../agent/turn.js'
+import { processTurn } from '../agent/turn.js'
 import type { TurnCallbacks } from '../agent/turn.js'
 import { CliError } from '../types.js'
 
@@ -116,9 +115,6 @@ export function createChatCommand(): Command {
         const pai = await initPai()
         const providerInfo = await pai.getProviderInfo(agentConfig.pai.provider)
 
-        const sessionFile = join(agentDir, 'sessions', `${CLI_THREAD_ID}.jsonl`)
-        await fs.mkdir(join(agentDir, 'sessions'), { recursive: true })
-
         const threadStore = await openOrCreateThread(id, CLI_THREAD_ID)
 
         process.stdout.write(`Chatting with agent '${id}' (Ctrl+C or Ctrl+D to exit)\n\n`)
@@ -141,45 +137,9 @@ export function createChatCommand(): Command {
             // Push user message to thread
             await threadStore.push({ source: CLI_SOURCE, type: 'message', content: text })
 
-            // Build system prompt (identity + all memory layers)
-            const identity = await loadIdentity(id)
-            const memoryDir = join(agentDir, 'memory')
-            const memParts: string[] = [identity]
-            for (const [file, label] of [
-              ['agent.md', 'Agent Memory'],
-              [`user-cli.md`, 'Peer Memory'],
-              [`thread-${CLI_THREAD_ID}.md`, 'Thread Memory'],
-            ] as [string, string][]) {
-              try {
-                const content = await fs.readFile(join(memoryDir, file), 'utf-8')
-                if (content.trim()) memParts.push(`## ${label}\n${content}`)
-              } catch { /* missing is fine */ }
-            }
-            const systemPrompt = memParts.join('\n\n')
-
-            // Build history from thread events
-            const events = await threadStore.peek({ lastEventId: 0, limit: 1000 })
-            const historyEvents = events.slice(0, -1)
-            type HistoryMessage = { role: 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string; tool_calls?: unknown[] }
-            const history: HistoryMessage[] = []
-            for (const ev of historyEvents) {
-              if (ev.type === 'message' && ev.source !== 'self') {
-                history.push({ role: 'user', content: ev.content })
-              } else if (ev.type === 'record') {
-                try {
-                  const msg = JSON.parse(ev.content) as HistoryMessage
-                  if (msg.role === 'assistant' || msg.role === 'tool') {
-                    history.push(msg)
-                  }
-                } catch {
-                  if (ev.source === 'self') {
-                    history.push({ role: 'assistant', content: ev.content })
-                  }
-                }
-              }
-            }
-
-            const chatInput = { system: systemPrompt, history, userMessage: text }
+            // Build context via shared buildContext (handles compact state + memory)
+            const inboundMsg = { source: CLI_SOURCE, content: text }
+            const { chatInput, eventIds } = await buildContext(id, agentConfig, threadStore, inboundMsg, CLI_THREAD_ID)
 
             // Streaming token writer → stdout
             let replyHeaderPrinted = false
@@ -223,9 +183,9 @@ export function createChatCommand(): Command {
               model: agentConfig.pai.model,
               stream: true,
               tokenWriter: stdoutWriter,
-              sessionFile,
               agentDir,
               threadId: CLI_THREAD_ID,
+              eventIds,
               contextWindow: providerInfo.contextWindow,
               maxOutputTokens: providerInfo.maxTokens,
               maxAttempts: agentConfig.retry.max_attempts,
